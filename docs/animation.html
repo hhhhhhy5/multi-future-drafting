@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MFD animation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Tinos:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; background: #fff; }
+  body.export { width: 960px; height: 540px; overflow: hidden; }
+  body.export svg { display: block; width: 960px; height: 540px; }
+  body.view { display: grid; place-items: center; min-height: 100vh; background: #f3f4f6; }
+  body.view svg { width: min(96vw, 1280px); height: auto; background: #fff; border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.12); }
+</style>
+</head>
+<body>
+<svg id="mfd-anim" viewBox="0 0 960 540"></svg>
+<script src="static/js/chimera.js?v=20261105b"></script>
+<script>
+  // ?export=1 freezes the layout at 960x540 for frame capture; otherwise the animation simply plays.
+  var isExport = /[?&]export=1/.test(location.search);
+  document.body.className = isExport ? "export" : "view";
+  var anim = MFDAnimation.mount(document.getElementById("mfd-anim"), { autoplay: !isExport });
+  window.mfdAnim = anim;
+  if (!isExport) document.getElementById("mfd-anim").addEventListener("click", function () { if (anim.playing()) anim.pause(); else anim.play(); });
+</script>
+</body>
+</html>

@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-Future Drafting</title>
+<meta name="description" content="Multi-Future Drafting (MFD): mixture block drafters for tree-verified speculative decoding. A product-ranked draft tree splices futures into chimeras; K learned modes draft K coherent blocks in one pass, and one exact mixture tree lets the verifier pick the future the target takes.">
+<meta property="og:title" content="Multi-Future Drafting: Mixture Block Drafters for Tree-Verified Speculative Decoding">
+<meta property="og:description" content="A product-ranked draft tree cannot keep futures apart. MFD drafts K coherent futures in one pass and ranks them in one exact tree: up to 7.8x speedup, 5-8% faster than the best single-mode tree, lossless.">
+<meta property="og:image" content="https://hhhhhhy5.github.io/multi-future-drafting/static/video/mfd_chimera_poster.png">
+<meta property="og:url" content="https://hhhhhhy5.github.io/multi-future-drafting/">
+<link rel="canonical" href="https://hhhhhhy5.github.io/multi-future-drafting/">
+<meta property="og:type" content="website">
+<link rel="icon" href="static/img/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Tinos:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="static/css/style.css?v=20261105b">
+</head>
+<body>
+
+<nav class="topnav" aria-label="Sections">
+  <div class="nav-inner">
+    <a class="brand" href="#top"><span class="brand-mark">MFD</span><span class="brand-text">Multi-Future Drafting</span></a>
+    <div class="nav-links">
+      <a href="#animation">In one minute</a>
+      <a href="#method">Method</a>
+      <a href="#results">Results</a>
+      <a href="#serving">Serving</a>
+      <a href="#modes">Modes</a>
+      <a href="#resources">Code &amp; models</a>
+      <a href="#bibtex">BibTeX</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
+      <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path class="icon-sun" d="M12 4V2m0 20v-2m8-8h2M2 12h2m13.66-5.66 1.41-1.41M4.93 19.07l1.41-1.41m0-11.32L4.93 4.93m14.14 14.14-1.41-1.41M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path class="icon-moon" d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="container">
+    <p class="venue">Preprint · 2026</p>
+    <h1 class="title">Multi-Future Drafting</h1>
+    <p class="subtitle">Mixture Block Drafters for Tree-Verified Speculative Decoding</p>
+
+    <p class="authors">
+      <span class="author">Haoyu Huang<sup>1,2</sup></span>
+      <span class="author">Jialiang Kang<sup>2</sup></span>
+      <span class="author">Linlin Yang<sup>3</sup></span>
+      <span class="author">Xiao Yang<sup>2,&#9993;</sup></span>
+      <span class="author">Baochang Zhang<sup>1,&#9993;</sup></span>
+    </p>
+    <p class="affiliations">
+      <span><sup>1</sup>Beihang University</span>
+      <span><sup>2</sup>Canva Research</span>
+      <span><sup>3</sup>Communication University of China</span>
+    </p>
+
+    <div class="buttons" id="link-buttons">
+      <a class="btn" data-link="arxiv" href="#"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4l16 16M4 20L20 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>arXiv</a>
+      <a class="btn" data-link="code" href="#"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Code</a>
+      <a class="btn" data-link="models" href="#"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7a8 3 0 0 0 16 0a8 3 0 0 0-16 0zm0 0v10a8 3 0 0 0 16 0V7M4 12a8 3 0 0 0 16 0" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>Models</a>
+      <a class="btn" href="#bibtex"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v16l-5-3-5 3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>BibTeX</a>
+    </div>
+
+    <div class="tldr">
+      <p class="tldr-head">TL;DR</p>
+      <ul>
+        <li>A draft tree ranked by a <em>product</em> of per-position distributions cannot keep futures apart. To hold two futures that disagree in <i>m</i> positions it must also hold 2<sup><i>m</i>&minus;1</sup>&minus;1 of their <strong>chimeras</strong>, prefixes spliced from both that the target never says. In practice chimeras are 27&ndash;33% of a 64-node tree.</li>
+        <li><strong>MFD</strong> adds <i>K</i> learned mode embeddings to the input of a one-pass block drafter, trains them winner-take-all, and keeps the <i>B</i> best prefixes over all modes in one exact tree. Cost: <i>K</i>+1 vectors, no extra drafting pass, decoding stays lossless.</li>
+        <li>On four Qwen targets from 4B to 27B, MFD is the fastest method on every task at both temperatures: up to 7.8&times; speedup, 5&ndash;8% faster than the strongest single-mode tree trained identically, 9&ndash;16% faster than DARTree, and 45&ndash;46% faster than the fastest released drafter in SGLang at batch size&nbsp;1.</li>
+      </ul>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section class="section" id="animation">
+  <div class="container">
+    <h2>In one minute</h2>
+    <p class="lead">A real GSM8K context for Qwen3-4B. After <i>Let&rsquo;s break</i>, the target model can say
+      <span class="fut-a">this down step by step</span> or <span class="fut-b">down the problem step by step</span>.
+      Watch what a product-ranked tree does with the two futures, and what MFD does instead.</p>
+
+    <div class="anim-wrap card">
+      <div class="anim-stage">
+        <svg id="mfd-anim" viewBox="0 0 960 540" role="img" aria-label="Animation: a product tree splices two futures into chimeras and accepts 2 tokens; MFD's mixture tree keeps both futures apart and accepts 6."></svg>
+      </div>
+      <div class="anim-controls">
+        <button type="button" class="ctl" id="anim-play" aria-label="Play or pause">Pause</button>
+        <button type="button" class="ctl" id="anim-restart" aria-label="Restart">Restart</button>
+        <div class="anim-scenes" id="anim-scenes"></div>
+        <div class="anim-progress" id="anim-progress"><div class="anim-progress-bar" id="anim-progress-bar"></div></div>
+        <label class="ctl-speed">speed <select id="anim-speed"><option value="0.5">0.5&times;</option><option value="1" selected>1&times;</option><option value="1.5">1.5&times;</option></select></label>
+      </div>
+      <p class="anim-hint">On a narrow screen the animation scrolls sideways; the MP4 below plays full-screen.</p>
+    </div>
+    <p class="caption">Drafter (a): DFlash fine-tuned with D-PACE, one distribution per position, DDTree keeps the 15 best prefixes under the product. Drafter (b): the same drafter fine-tuned as MFD with <i>K</i>&nbsp;=&nbsp;8 modes; the tree keeps the 15 best prefixes over all modes, each scored by its best mode. In (b) the bars are each mode&rsquo;s token probabilities; the 15th-best score (.698) is the common cut-off, each mode keeps the prefixes of its block that reach it (37 in all), and every node is pulled from the modes that keep it, so shared prefixes are built once. Both trees and the mode probabilities are the real ones from the paper&rsquo;s Figure&nbsp;1 example.
+      Download: <a href="static/video/mfd_chimera.mp4">MP4</a> · <a href="static/video/mfd_chimera.gif">GIF</a>.</p>
+  </div>
+</section>
+
+<section class="section numbers" id="numbers">
+  <div class="container">
+    <div class="stat-grid">
+      <div class="stat"><div class="stat-v">up to 7.8<span class="x">&times;</span></div><div class="stat-l">speedup over autoregressive decoding (Qwen3.5-4B, <i>T</i>=0), batch size 1</div></div>
+      <div class="stat"><div class="stat-v">5&ndash;8%</div><div class="stat-l">faster than the strongest single-mode tree trained identically; 6&ndash;12% with 1.42M prompts</div></div>
+      <div class="stat"><div class="stat-v">9&ndash;16%</div><div class="stat-l">faster than the released DARTree trained on the same prompts (Qwen3-4B, Qwen3-8B)</div></div>
+      <div class="stat"><div class="stat-v">45&ndash;46%</div><div class="stat-l">faster than the fastest released drafter in SGLang 0.5.22 at batch size 1</div></div>
+      <div class="stat"><div class="stat-v">27&ndash;33%</div><div class="stat-l">of a 64-node product tree&rsquo;s nodes are chimeras; its best path crosses one in 61&ndash;65% of rounds</div></div>
+      <div class="stat"><div class="stat-v"><i>K</i>+1</div><div class="stat-l">extra vectors (about 23K parameters for <i>K</i>=8), no extra drafting pass, lossless</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="abstract">
+  <div class="container narrow">
+    <h2>Abstract</h2>
+    <p>Block drafters such as DFlash draft a block of future tokens in one forward pass, and draft trees such as DDTree verify the prefixes ranked highest by the product of the drafter&rsquo;s per-position distributions. Under tree verification, the expected number of accepted tokens is the probability mass the tree covers. We show that a product misallocates it: when the continuation can follow several futures, it splices them into <em>chimeras</em>, prefixes stitched together from different futures that the target never produces, and gives them as much budget as the futures themselves. Barring ties, no product-ranked tree can hold two futures that disagree in <i>m</i> positions without 2<sup><i>m</i>&minus;1</sup>&minus;1 chimeras, however well the drafter is trained, and in practice chimeras make up 27&ndash;33% of a 64-node tree. We propose <em>Multi-Future Drafting</em> (MFD), which restores the coupling with a latent variable instead of the chain rule: <i>K</i> learned mode embeddings at the drafter&rsquo;s input draft <i>K</i> coherent blocks in the same pass, and a mixture DDTree lets the verifier pick the future the target takes, losslessly and with <i>K</i>+1 extra vectors. On four Qwen targets from 4B to 27B parameters, at batch size 1, MFD reaches up to 7.8&times; speedup, 5&ndash;8% faster than the best single-mode tree trained identically and, on Qwen3-4B and Qwen3-8B, 9&ndash;16% faster than the released DARTree trained on the same prompts.</p>
+  </div>
+</section>
+
+<section class="section" id="method">
+  <div class="container">
+    <h2>How it works</h2>
+    <div class="steps">
+      <div class="step card">
+        <div class="step-n">1</div>
+        <h3>The problem: a product splices futures</h3>
+        <p>Under tree verification the expected number of accepted tokens equals the probability mass the tree covers, so the best tree holds the <i>B</i> most probable prefixes by <em>joint</em> probability. A one-pass drafter gives one distribution per position, and ranking by their product is right only if positions are independent. They are not: a step can be phrased, ordered or formatted in several ways, and after the futures split they disagree almost everywhere. The product&rsquo;s error is the total correlation between positions, which compounds with depth, and no training of such a drafter removes it.</p>
+      </div>
+      <div class="step card">
+        <div class="step-n">2</div>
+        <h3>The fix: a latent future, not the chain rule</h3>
+        <p>Two classical tools make positions dependent again. The chain rule conditions each position on the tokens before it and pays with sequential drafting. MFD uses the other one: a latent variable that <em>names the future</em>; given it, positions are independent. <i>K</i> learned embeddings are added to the drafter&rsquo;s input, one per mode, and the <i>K</i> blocks are drafted side by side in the same forward pass. Training is winner-take-all on each block&rsquo;s coverage, so the mode that fits a future keeps learning it and the modes specialize.</p>
+      </div>
+      <div class="step card">
+        <div class="step-n">3</div>
+        <h3>One exact tree, one verification pass</h3>
+        <p>Every prefix is scored by its best mode, and the <i>B</i> best prefixes over all modes form one tree: exactly the union of the per-mode trees, computed by merging the <i>K</i> best-first searches into one heap. The target verifies it in a single pass, as with DDTree, and keeps the future it actually takes. The modes are not separate drafts: uncertainty about the future becomes breadth that the verifier checks in parallel.</p>
+      </div>
+    </div>
+
+    <figure class="figure card">
+      <img src="static/img/method.svg" alt="Method figure: (a) K modes drafted in one pass, (b) winner-take-all training, (c) one tree verified in one pass" loading="lazy">
+      <figcaption><strong>Figure 2.</strong> (a) <i>K</i> mode embeddings <b>e</b><sub><i>k</i></sub> are added to every position of copy <i>k</i> of the block; the copies share the context and run in one forward pass, each giving one distribution per position. (b) The D-PACE loss is applied inside each mode and weighted toward the mode with the largest coverage of the block, so the modes specialize. (c) Prefixes are scored by their best mode; the <i>B</i> best form one tree that the target checks in one pass. Here the real 15-node tree: 6 nodes on future A, 9 on B, no chimera; the target accepts 6 drafted tokens plus the bonus token.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="section" id="results">
+  <div class="container">
+    <h2>Results</h2>
+    <p class="lead">Five tasks (GSM8K, MATH-500, HumanEval, MBPP, MT-Bench) at <i>T</i>=0 and <i>T</i>=1, Hugging Face Transformers, batch size 1, one RTX PRO 6000 GPU. Speedup over autoregressive decoding, with the acceptance length &tau; in parentheses, five-task means. Every tree method is at its best budget. FT: fine-tuned under our recipe, one or three epochs, on 100K DFlash prompts regenerated by each target; the bottom block uses the 1.42M target-regenerated prompts of Domino, the data of DARTree&rsquo;s drafter.</p>
+
+    <figure class="figure card teaser">
+      <img src="static/img/teaser.svg" alt="Figure 1: the running example and speedup against the tree budget" loading="lazy">
+      <figcaption><strong>Figure 1.</strong> (a, b) The running example. (c) Speedup (<i>T</i>=0, five-task mean) against the tree budget <i>B</i>: MFD leads the strongest D-PACE tree under the same recipe at every budget, by about 2% at <i>B</i>=16 and 6&ndash;7% from <i>B</i>=64 on. DDTree uses the released drafter; dashed: chain drafters.</figcaption>
+    </figure>
+
+    <div class="table-wrap card">
+      <table class="results">
+        <caption><strong>Table 1.</strong> Speedup and acceptance length &tau;, five-task means. Bold: best within each block.</caption>
+        <thead>
+          <tr><th rowspan="2">Method</th><th rowspan="2">Training</th><th colspan="2">Qwen3-4B</th><th colspan="2">Qwen3-8B</th><th colspan="2">Qwen3.5-4B (thinking)</th><th colspan="2">Qwen3.6-27B (thinking)</th></tr>
+          <tr><th><i>T</i>=0</th><th><i>T</i>=1</th><th><i>T</i>=0</th><th><i>T</i>=1</th><th><i>T</i>=0</th><th><i>T</i>=1</th><th><i>T</i>=0</th><th><i>T</i>=1</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>EAGLE-3</td><td>released</td><td>4.21&times; <s>(6.46)</s></td><td>3.87&times; <s>(6.01)</s></td><td>3.75&times; <s>(6.07)</s></td><td>3.42&times; <s>(5.58)</s></td><td>&ndash;</td><td>&ndash;</td><td>&ndash;</td><td>&ndash;</td></tr>
+          <tr><td>DFlash chain</td><td>released</td><td>4.38&times; <s>(5.98)</s></td><td>3.73&times; <s>(5.08)</s></td><td>4.26&times; <s>(5.99)</s></td><td>3.48&times; <s>(4.88)</s></td><td>4.85&times; <s>(6.25)</s></td><td>3.29&times; <s>(4.23)</s></td><td>4.66&times; <s>(5.81)</s></td><td>4.04&times; <s>(5.04)</s></td></tr>
+          <tr><td>DFlash 2 selector chain</td><td>FT 1 ep</td><td>4.73&times; <s>(6.63)</s></td><td>4.12&times; <s>(5.79)</s></td><td>4.73&times; <s>(6.74)</s></td><td>4.00&times; <s>(5.75)</s></td><td>5.38&times; <s>(7.01)</s></td><td>3.97&times; <s>(5.18)</s></td><td>4.89&times; <s>(6.09)</s></td><td>4.35&times; <s>(5.43)</s></td></tr>
+          <tr><td>DDTree</td><td>released</td><td>6.08&times; <s>(8.59)</s></td><td>5.44&times; <s>(7.70)</s></td><td>5.73&times; <s>(8.18)</s></td><td>5.00&times; <s>(7.13)</s></td><td>6.53&times; <s>(8.78)</s></td><td>4.77&times; <s>(6.51)</s></td><td>5.89&times; <s>(7.62)</s></td><td>5.27&times; <s>(6.86)</s></td></tr>
+          <tr><td>DFlash 2 + DDTree</td><td>FT 1 ep</td><td>6.13&times; <s>(8.84)</s></td><td>5.39&times; <s>(7.78)</s></td><td>5.80&times; <s>(8.60)</s></td><td>4.88&times; <s>(7.28)</s></td><td>6.80&times; <s>(9.29)</s></td><td>4.62&times; <s>(6.40)</s></td><td>5.73&times; <s>(7.40)</s></td><td>5.07&times; <s>(6.57)</s></td></tr>
+          <tr><td>D-PACE + DDTree</td><td>FT 1 ep</td><td>6.31&times; <s>(8.91)</s></td><td>5.54&times; <s>(7.84)</s></td><td>6.06&times; <s>(8.62)</s></td><td>5.10&times; <s>(7.26)</s></td><td>6.96&times; <s>(9.37)</s></td><td>4.67&times; <s>(6.37)</s></td><td>6.43&times; <s>(8.31)</s></td><td>5.52&times; <s>(7.19)</s></td></tr>
+          <tr><td>D-PACE + DDTree</td><td>FT 3 ep</td><td>6.22&times; <s>(8.78)</s></td><td>5.39&times; <s>(7.63)</s></td><td>6.04&times; <s>(8.60)</s></td><td>5.03&times; <s>(7.15)</s></td><td>6.97&times; <s>(9.38)</s></td><td>4.66&times; <s>(6.35)</s></td><td>6.46&times; <s>(8.35)</s></td><td>5.50&times; <s>(7.17)</s></td></tr>
+          <tr class="ours"><td>MFD (<i>K</i>=8)</td><td>FT 1 ep</td><td>6.67&times; <s>(9.63)</s></td><td>5.90&times; <s>(8.54)</s></td><td>6.41&times; <s>(9.35)</s></td><td>5.41&times; <s>(7.88)</s></td><td>7.17&times; <s>(9.88)</s></td><td>5.03&times; <s>(7.02)</s></td><td>6.56&times; <s>(8.64)</s></td><td>5.82&times; <s>(7.71)</s></td></tr>
+          <tr class="ours best"><td>MFD (<i>K</i>=8)</td><td>FT 3 ep</td><td><b>6.73&times;</b> <s>(9.71)</s></td><td><b>5.96&times;</b> <s>(8.63)</s></td><td><b>6.51&times;</b> <s>(9.47)</s></td><td><b>5.43&times;</b> <s>(7.89)</s></td><td><b>7.31&times;</b> <s>(10.07)</s></td><td><b>5.04&times;</b> <s>(7.03)</s></td><td><b>6.77&times;</b> <s>(8.91)</s></td><td><b>5.94&times;</b> <s>(7.87)</s></td></tr>
+          <tr class="block"><td colspan="10"><em>Full data: 1.42M target-regenerated prompts</em></td></tr>
+          <tr><td>DARTree</td><td>released</td><td>6.53&times; <s>(9.97)</s></td><td>5.49&times; <s>(8.34)</s></td><td>6.42&times; <s>(10.09)</s></td><td>5.23&times; <s>(8.11)</s></td><td>&ndash;</td><td>&ndash;</td><td>&ndash;</td><td>&ndash;</td></tr>
+          <tr><td>D-PACE + DDTree</td><td>FT 3 ep</td><td>6.66&times; <s>(9.34)</s></td><td>5.66&times; <s>(7.96)</s></td><td>6.43&times; <s>(9.18)</s></td><td>5.26&times; <s>(7.48)</s></td><td>7.31&times; <s>(9.82)</s></td><td>4.74&times; <s>(6.46)</s></td><td>6.74&times; <s>(8.72)</s></td><td>5.69&times; <s>(7.40)</s></td></tr>
+          <tr class="ours best"><td>MFD (<i>K</i>=8)</td><td>FT 3 ep</td><td><b>7.32&times;</b> <s>(10.49)</s></td><td><b>6.35&times;</b> <s>(9.13)</s></td><td><b>6.98&times;</b> <s>(10.18)</s></td><td><b>5.88&times;</b> <s>(8.52)</s></td><td><b>7.78&times;</b> <s>(10.72)</s></td><td><b>5.18&times;</b> <s>(7.23)</s></td><td><b>7.16&times;</b> <s>(9.42)</s></td><td><b>6.16&times;</b> <s>(8.16)</s></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">MFD is the fastest method for every target, temperature and task: the three-epoch MFD is 4.8&ndash;7.4% faster than the strongest baseline at <i>T</i>=0 and 5.7&ndash;7.6% at <i>T</i>=1. Fine-tuned on the full 1.42M prompts, both trees improve and the mixture&rsquo;s lead grows to 6.2&ndash;12.2%. DARTree is timed in its released configuration, in the same process and on the same prompts: at the same 64 nodes it accepts more tokens per round, but its per-depth correction takes 2.6&ndash;2.7 ms per round to build the tree, against about 0.35 ms for MFD. Fine-tuning for three epochs instead of one leaves the single-mode D-PACE unchanged or slightly worse on every target, while MFD improves.</p>
+  </div>
+</section>
+
+<section class="section" id="serving">
+  <div class="container">
+    <h2>In a serving engine</h2>
+    <p class="lead">We implemented DDTree and the mixture tree in SGLang 0.5.22, verifying trees inside the target&rsquo;s CUDA graphs. Both draft over the 64K most frequent tokens of target responses and verify over the full vocabulary, so decoding stays lossless.</p>
+    <div class="serving-grid">
+      <div class="table-wrap card">
+        <table class="results compact">
+          <caption><strong>Table 2.</strong> Batch size 1 in SGLang 0.5.22 on one RTX PRO 6000 GPU: decode speedup over SGLang&rsquo;s autoregressive decoding (prefill excluded), with &tau; in parentheses, five-task means. Bold: fastest per column.</caption>
+          <thead>
+            <tr><th rowspan="2"></th><th colspan="2">Qwen3-4B</th><th colspan="2">Qwen3-8B</th></tr>
+            <tr><th><i>T</i>=0</th><th><i>T</i>=1</th><th><i>T</i>=0</th><th><i>T</i>=1</th></tr>
+          </thead>
+          <tbody>
+            <tr class="block"><td colspan="5"><em>Released drafters on SGLang&rsquo;s own engine paths</em></td></tr>
+            <tr><td>EAGLE-3</td><td>2.75&times; <s>(5.21)</s></td><td>2.58&times; <s>(4.91)</s></td><td>3.12&times; <s>(5.69)</s></td><td>2.88&times; <s>(4.91)</s></td></tr>
+            <tr><td>DFlash chain</td><td>4.06&times; <s>(5.97)</s></td><td>3.46&times; <s>(5.10)</s></td><td>4.39&times; <s>(5.90)</s></td><td>3.62&times; <s>(4.88)</s></td></tr>
+            <tr><td>DFlash 2 selector chain</td><td>3.37&times; <s>(5.20)</s></td><td>3.07&times; <s>(4.72)</s></td><td>3.57&times; <s>(4.94)</s></td><td>3.26&times; <s>(4.52)</s></td></tr>
+            <tr class="block"><td colspan="5"><em>Tree verification in our SGLang engine</em></td></tr>
+            <tr><td>DDTree (released drafter)</td><td>4.97&times; <s>(7.81)</s></td><td>4.44&times; <s>(6.99)</s></td><td>5.27&times; <s>(7.79)</s></td><td>4.56&times; <s>(6.74)</s></td></tr>
+            <tr><td>D-PACE + DDTree (full data)</td><td>5.52&times; <s>(8.72)</s></td><td>4.72&times; <s>(7.48)</s></td><td>5.99&times; <s>(8.84)</s></td><td>4.82&times; <s>(7.15)</s></td></tr>
+            <tr class="ours"><td>MFD (ours)</td><td><b>5.93&times;</b> <s>(9.62)</s></td><td>5.06&times; <s>(8.23)</s></td><td><b>6.43&times;</b> <s>(9.72)</s></td><td><b>5.26&times;</b> <s>(7.96)</s></td></tr>
+            <tr class="ours"><td>MFD-D (ours)</td><td>5.89&times; <s>(9.59)</s></td><td><b>5.11&times;</b> <s>(8.27)</s></td><td>6.41&times; <s>(9.69)</s></td><td>5.24&times; <s>(7.95)</s></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="serving-text">
+        <p><strong>Batch size 1.</strong> MFD is 45&ndash;46% faster than the fastest released drafter, the DFlash chain on SGLang&rsquo;s own engine paths, and 7&ndash;9% faster than D-PACE fine-tuned on the same data in our engine, which shares every optimization.</p>
+        <p><strong>Larger batches.</strong> MFD is 10&ndash;18% faster than every released option at batch 1&ndash;2 and 3&ndash;11% at batch 4, but falls behind DDTree with the released drafter from batch 8 and SGLang&rsquo;s own paths from batch 16: its draft cost grows with the batch while its acceptance length does not.</p>
+        <p><strong>MFD-D.</strong> The same drafter with a single-mode default path, which the engine switches to from three requests, is the fastest configuration we timed at every batch size.</p>
+      </div>
+    </div>
+    <figure class="figure card mid">
+      <img src="static/img/engine.svg" alt="Figure 5: closed-loop speedup against batch size in SGLang" loading="lazy">
+      <figcaption><strong>Figure 5.</strong> Closed-loop decode speedup over SGLang&rsquo;s autoregressive decoding against the batch size (as many requests in flight as the batch size), Qwen3-4B and Qwen3-8B at <i>T</i>=0 and <i>T</i>=1, each method at its best budget per batch size. Dashed line: the fastest released option on SGLang&rsquo;s own engine paths (DFlash chain, DFlash 2, EAGLE-3) at each batch size, which is the DFlash chain except where DFlash 2 is faster (open squares); DDTree: the released DFlash drafter in our tree engine. MFD and MFD-D run their drafter&rsquo;s linear layers in FP8 (SGLang&rsquo;s online option, no new checkpoint): the acceptance length is unchanged, MFD gains 4&ndash;8% at batch 4&ndash;8 and 8&ndash;15% at batch 16&ndash;32, the single-mode drafters little (DDTree with the released drafter 3&ndash;6% at batch 32, SGLang&rsquo;s own paths nothing), so every released option is shown at the better of its bf16 and FP8 timings. MFD leads at batch 1&ndash;4; MFD-D switches to its single-mode path from three requests and is the fastest option at every batch size.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="section" id="modes">
+  <div class="container">
+    <h2>What the modes are</h2>
+    <div class="two-col modes-grid">
+      <div class="modes-text">
+        <p>A mode is one value of a latent variable that names the future. The uncertainty it hedges over is the <em>drafter&rsquo;s</em>: at <i>T</i>=0 the target is deterministic, but a small drafter that reads a few target layers cannot tell the futures apart, and what remains is spread over the ways a step can be phrased, ordered or formatted. The gain therefore persists at <i>T</i>=0 and needs a branching verifier: a chain that follows one mode, even the gate&rsquo;s best guess, is <em>worse</em> than a single-mode drafter, while the tree over all modes gains up to 8.7%.</p>
+        <ul class="facts">
+          <li><strong>All eight modes are used.</strong> The effective number of modes is 7.9&ndash;8.0 of 8; no mode is the likeliest for more than 16% of the blocks, and leaving any one out lowers &tau; by 0.3&ndash;1.2%. About their mean, the embeddings are nearly equiangular, close to a regular simplex.</li>
+          <li><strong>The winning mode is hard to predict.</strong> The gate&rsquo;s top mode is the winner in 28% of the blocks (chance: 12.5%); its top four contain it in 72%. Following each block&rsquo;s best mode as a chain would be 20&ndash;40% longer, which is the hedging value no chain can collect.</li>
+          <li><strong>The value is in the coupling across positions.</strong> Shuffling the modes independently at each position keeps every position&rsquo;s distributions but drops the tree below the single-mode one; the product of the modes&rsquo; mean marginals only matches it. The mixture explains a coupling that grows with depth and passes log&nbsp;<i>K</i> at depth 9&ndash;10.</li>
+          <li><strong>Most of the gain lives in the drafter&rsquo;s weights.</strong> Random embeddings with the trained norms keep 60&ndash;80% of the gain on the MFD drafter but only 12&ndash;24% on a drafter trained without modes.</li>
+          <li><strong>Modes help where the target forks.</strong> Anchors where a runner-up token of at least 10% leads elsewhere are 60&ndash;71% of all anchors and carry 75&ndash;88% of the gain; the mixture tree removes 54&ndash;57% of the chimeras that forks add.</li>
+        </ul>
+      </div>
+      <div class="table-wrap card">
+        <table class="forks">
+          <caption><strong>Table 13.</strong> Tokens each mode drafts at the first position where the modes&rsquo; argmax chains disagree, most often relative to the average mode (lift in parentheses; Qwen3-4B, <i>T</i>=0). The modes differ in how the next step starts, ends and is formatted.</caption>
+          <thead><tr><th>Mode</th><th>Distinctive fork tokens</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>Our (3.9), But (3.7), implementation (3.2), To (2.6), However (2.5)</td></tr>
+            <tr><td>2</td><td><code>Rightarrow</code> (2.8), <code>**,</code> (2.6), <code>$,</code> (2.5), <code>`,</code> (2.3), Thus (2.2)</td></tr>
+            <tr><td>3</td><td>This (3.4), These (3.1), which (3.1), Key (2.6), Since (2.6)</td></tr>
+            <tr><td>4</td><td>Therefore (5.0), also (3.0), Test (2.7), correctly (2.6), Then (2.6)</td></tr>
+            <tr><td>5</td><td>without (2.8), We (2.8), may (2.7), They (2.6), we (2.5)</td></tr>
+            <tr><td>6</td><td><code>Analy</code> (2.5), <code>---</code> (2.2), in (2.1), The (2.1), denote (2.1)</td></tr>
+            <tr><td>7</td><td>passes (4.2), Solve (2.4), end of turn (1.9), Find (1.9), <code>####</code> (1.8)</td></tr>
+            <tr><td>8</td><td><code>$.</code> (3.1), So (2.7), indentation (2.5), let (2.5), abc (2.3)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <figure class="figure card half">
+      <img src="static/img/budget.svg" alt="Figure 3: where the budget of a product tree goes" loading="lazy">
+      <figcaption><strong>Figure 3.</strong> Where the budget goes (Qwen3-4B). Left: share of the nodes at each depth whose last step the target takes with probability below 1%. Right: probability mass kept at each depth. From depth 2 on, where chimeras first form, the product trees waste more nodes and keep less mass; at the same budget the MFD tree covers 8&ndash;10% more of the target&rsquo;s probability mass.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="section" id="resources">
+  <div class="container">
+    <h2>Code and models</h2>
+    <p class="lead">The release contains Hugging Face inference with the paper&rsquo;s speed benchmark, the SGLang 0.5.22 patch (tree verification inside CUDA graphs, the mixture tree, exact tree verification for hybrid Gated-DeltaNet targets, the fused mode-attention kernel), tests, and the drafters below. Each drafter is a DFlash-format checkpoint with <i>K</i>=8 mode embeddings, fine-tuned from the released DFlash drafter of its target.</p>
+    <div class="table-wrap card">
+      <table class="models">
+        <thead><tr><th>Drafter</th><th>Target</th><th>Data, epochs</th><th>In the paper</th><th>Checkpoint</th></tr></thead>
+        <tbody>
+          <tr><td>MFD</td><td>Qwen3-4B</td><td>1.42M, 3</td><td>Table 1 (full data), Table 2</td><td><a data-model="MFD-Qwen3-4B" href="#">MFD-Qwen3-4B</a></td></tr>
+          <tr><td>MFD</td><td>Qwen3-8B</td><td>1.42M, 3</td><td>Table 1 (full data), Table 2</td><td><a data-model="MFD-Qwen3-8B" href="#">MFD-Qwen3-8B</a></td></tr>
+          <tr><td>MFD</td><td>Qwen3.5-4B (thinking)</td><td>1.42M, 3</td><td>Table 1 (full data)</td><td><a data-model="MFD-Qwen3.5-4B" href="#">MFD-Qwen3.5-4B</a></td></tr>
+          <tr><td>MFD</td><td>Qwen3.6-27B (thinking)</td><td>1.42M, 3</td><td>Table 1 (full data)</td><td><a data-model="MFD-Qwen3.6-27B" href="#">MFD-Qwen3.6-27B</a></td></tr>
+          <tr><td>MFD</td><td>Qwen3-4B</td><td>100K, 3</td><td>Table 1</td><td><a data-model="MFD-Qwen3-4B-100K" href="#">MFD-Qwen3-4B-100K</a></td></tr>
+          <tr><td>MFD</td><td>Qwen3-8B</td><td>100K, 3</td><td>Table 1</td><td><a data-model="MFD-Qwen3-8B-100K" href="#">MFD-Qwen3-8B-100K</a></td></tr>
+          <tr><td>MFD</td><td>Qwen3.5-4B (thinking)</td><td>100K, 3</td><td>Table 1</td><td><a data-model="MFD-Qwen3.5-4B-100K" href="#">MFD-Qwen3.5-4B-100K</a></td></tr>
+          <tr><td>MFD</td><td>Qwen3.6-27B (thinking)</td><td>100K, 3</td><td>Table 1</td><td><a data-model="MFD-Qwen3.6-27B-100K" href="#">MFD-Qwen3.6-27B-100K</a></td></tr>
+          <tr><td>MFD-D</td><td>Qwen3-4B</td><td>1.42M, 3</td><td>Table 2, Figure 5</td><td><a data-model="MFD-D-Qwen3-4B" href="#">MFD-D-Qwen3-4B</a></td></tr>
+          <tr><td>MFD-D</td><td>Qwen3-8B</td><td>1.42M, 3</td><td>Table 2, Figure 5</td><td><a data-model="MFD-D-Qwen3-8B" href="#">MFD-D-Qwen3-8B</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note" id="links-note">Links to the repository and the checkpoints are filled in once the release is public.</p>
+  </div>
+</section>
+
+<section class="section" id="bibtex">
+  <div class="container narrow">
+    <h2>BibTeX</h2>
+    <div class="bib card">
+      <button type="button" class="copy" id="copy-bib">Copy</button>
+<pre id="bib-text">@article{huang2026mfd,
+  title   = {Multi-Future Drafting: Mixture Block Drafters for Tree-Verified Speculative Decoding},
+  author  = {Huang, Haoyu and Kang, Jialiang and Yang, Linlin and Yang, Xiao and Zhang, Baochang},
+  journal = {arXiv preprint arXiv:ARXIV_ID},
+  year    = {2026}
+}</pre>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <p>Multi-Future Drafting · Preprint, 2026. Correspondence: Xiao Yang (xiaoy@canva.com), Baochang Zhang (bczhang@buaa.edu.cn).</p>
+    <p class="fine">MFD builds on <a href="https://arxiv.org/abs/2602.06036">DFlash</a>, <a href="https://arxiv.org/abs/2604.12989">DDTree</a> and D-PACE; the serving results use SGLang 0.5.22. All speedups are measured against autoregressive decoding of the same target on one NVIDIA RTX PRO 6000 Blackwell GPU.</p>
+  </div>
+</footer>
+
+<script src="static/js/chimera.js?v=20261105b"></script>
+<script src="static/js/main.js?v=20261105b"></script>
+</body>
+</html>
