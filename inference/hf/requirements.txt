@@ -1,0 +1,17 @@
+# HF inference environment (README.md): Python 3.11, then
+#   uv pip install -r inference/hf/requirements.txt
+# Versions are the ones the paper's timings and the tests ran with.
+torch==2.13.0
+transformers==5.12.1
+safetensors
+huggingface_hub
+datasets
+numpy
+tqdm
+loguru
+# builds the C++ extensions (torch.utils.cpp_extension.load_inline, CPU only: KV compaction, tree builder) on first
+# use; needs a C++ compiler
+ninja
+# hybrid Gated-DeltaNet targets only (Qwen3.5 / Qwen3.6): tree_gdn_kernel.py uses fla's solve_tril, and the native
+# transformers layers use fla's kernels
+flash-linear-attention==0.5.2

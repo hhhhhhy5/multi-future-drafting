@@ -1,0 +1,3157 @@
+diff --git a/python/sglang/srt/arg_groups/speculative_hook.py b/python/sglang/srt/arg_groups/speculative_hook.py
+index 9c856e5..34062fd 100644
+--- a/python/sglang/srt/arg_groups/speculative_hook.py
++++ b/python/sglang/srt/arg_groups/speculative_hook.py
+@@ -348,7 +348,17 @@ def _handle_dflash(server_args: ServerArgs) -> None:
+             speculative_eagle_topk=1,
+         )
+ 
+-    if cfg.speculative_dflash_block_size is not None:
++    from sglang.srt.speculative.ddtree_utils import ddtree_budget
++
++    if ddtree_budget() > 0:
++        # DDTree: the target verifies the root + B tree nodes per round.
++        declare_resolution(
++            server_args,
++            "_handle_dflash",
++            speculative_num_draft_tokens=ddtree_budget() + 1,
++        )
++
++    if cfg.speculative_dflash_block_size is not None and ddtree_budget() <= 0:
+         if int(cfg.speculative_dflash_block_size) <= 0:
+             raise ValueError(
+                 "DFLASH requires --speculative-dflash-block-size to be positive, "
+diff --git a/python/sglang/srt/environ.py b/python/sglang/srt/environ.py
+index 77b16ef..c60a9ea 100644
+--- a/python/sglang/srt/environ.py
++++ b/python/sglang/srt/environ.py
+@@ -1419,6 +1419,57 @@ class Envs:
+     SGLANG_OPT_FUSED_KDA_VERIFY = EnvBool(False)
+     # A/B: keep the DFLASH draft greedy head eager (not folded in-graph).
+     SGLANG_DFLASH_EAGER_DRAFT_SAMPLER = EnvBool(False)
++    # MFD / DDTree patch: DDTree tree verification for DFLASH (0 = off, the chain).
++    # B > 0 verifies the B best draft prefixes as a tree; the verify width
++    # (speculative_num_draft_tokens) becomes B + 1, the draft block keeps BLOCK_SIZE.
++    SGLANG_DFLASH_DDTREE_BUDGET = EnvInt(0)
++    SGLANG_DFLASH_DDTREE_BLOCK_SIZE = EnvInt(16)
++    # Draft modes per DDTree round: 1 for a single-mode draft; K for a multi-mode
++    # (MFD) draft, whose K mode blocks share one draft forward (K * BLOCK_SIZE tokens).
++    SGLANG_DFLASH_DDTREE_NUM_MODES = EnvInt(1)
++    # Run only these mode indices of a multi-mode draft (comma-separated; NUM_MODES = their count, 1 allowed);
++    # empty = all of the draft's modes.
++    SGLANG_DFLASH_DDTREE_MODE_SUBSET = EnvTuple(())
++    # MODE_SUBSET may name index M (the draft's mode count): its default path, the drafter without a mode vector, for
++    # drafts trained with one (SpecForge training.mode_default_alpha > 0; untrained otherwise).
++    SGLANG_DFLASH_DDTREE_DEFAULT_MODE = EnvBool(False)
++    # Batch-size switch (empty = off): comma-separated "min_bs:budget[:branches]" tree configurations by ascending
++    # min_bs >= 2, each with its own draft and verify cuda graphs; a decode batch of n requests runs the last one with
++    # min_bs <= n (BUDGET / NUM_MODES / MODE_SUBSET below the first). branches: '.'-separated MODE_SUBSET indices,
++    # default all of the draft's modes. E.g. "2:31,3:15:8": the K-mode mixture at budget 31 for batches of 2, the
++    # default path (index 8 of an 8-mode draft) at budget 15 from 3 requests on.
++    SGLANG_DFLASH_DDTREE_SWITCH = EnvStr("")
++    # A/B: commit the accepted path's KV with the pool's generic move (every entry of the [bs, L] move list) instead
++    # of the DDTree compaction kernel (only the moves that change a slot; same outputs, 1.4 ms less per round at
++    # batch 32 on an RTX PRO 6000 Blackwell).
++    SGLANG_DFLASH_DDTREE_GENERIC_KV_MOVE = EnvBool(False)
++    # Reduced draft vocabulary of the DDTree / MFD draft top-k head (empty = the full vocabulary): path of a token-id
++    # list (a JSON list, a JSON object with "token_ids", or whitespace-separated ids). The head scores only those rows
++    # of the LM head (top-k candidates and log-normalizer over the subset) and maps its candidates back to full ids;
++    # the target still verifies with its full vocabulary, so decoding stays lossless (build_draft_vocab.py of the
++    # MFD release).
++    SGLANG_DFLASH_DDTREE_DRAFT_VOCAB = EnvStr("")
++    # Log per-stage GPU/CPU times of DDTree rounds every N rounds (0 = off; adds events, no extra syncs).
++    SGLANG_DFLASH_DDTREE_TIMING = EnvInt(0)
++    # DDTree host tree build: 0 = the scheduler thread waits for the draft and builds (v1); 1 = a
++    # stream-ordered CUDA host function (v2); 2 = a C++ builder thread, the stream waits on its pinned
++    # flag (v3). 1 and 2 also pack the flashinfer custom mask at host-known offsets (no host sync).
++    SGLANG_DFLASH_DDTREE_ASYNC = EnvInt(2)
++    # Debug: check the host-known committed lengths against the device ones every round (syncs).
++    SGLANG_DFLASH_DDTREE_CHECK_HOST_LENS = EnvBool(False)
++    # Debug: append every DDTree round (tree, target tokens, accepted path, verify log-probs at the path) to this
++    # JSON-lines file (syncs every round).
++    SGLANG_DFLASH_DDTREE_TRACE = EnvStr(None)
++    # Multi-mode draft attention: "triton" (mask-free paged kernel, ddtree_mode_attention.py), "flashinfer"
++    # (paged prefill with a block-diagonal custom mask), "reference" (float32 torch; eager validation only).
++    SGLANG_DFLASH_DDTREE_MODE_ATTN = EnvStr("triton")
++    # Context splits of the triton mode kernel: -1 picks per batch size (the fused single-pass kernel once the
++    # programs cover the SMs twice, else up to 4 splits with a merge); a positive value fixes the split count,
++    # 0 forces the fused kernel. At batch 32 the fused kernel halves the draft attention of an 8-mode drafter.
++    SGLANG_DFLASH_DDTREE_MODE_ATTN_SPLITS = EnvInt(-1)
++    # Debug (eager only): every round, also run the multi-mode draft with the other implementations and log the
++    # draft-logit differences against the float32 reference.
++    SGLANG_DFLASH_DDTREE_MODE_ATTN_CHECK = EnvBool(False)
+     SGLANG_ENABLE_LILICORR_SAMPLING = EnvBool(False)
+     SGLANG_LILICORR_REQUIRE_SAMPLING = EnvBool(False)
+     SGLANG_RAGGED_VERIFY_MODE = EnvStr("static")
+diff --git a/python/sglang/srt/layers/attention/flashinfer_backend.py b/python/sglang/srt/layers/attention/flashinfer_backend.py
+index 6461526..f85a613 100644
+--- a/python/sglang/srt/layers/attention/flashinfer_backend.py
++++ b/python/sglang/srt/layers/attention/flashinfer_backend.py
+@@ -177,6 +177,14 @@ FULL_CG_PREFILL_WORKSPACE_MARGIN = 1.25
+ global_override_indptr_cpu = None
+ 
+ 
++def _ddtree_packed_mask_fast_plan() -> bool:
++    """DDTree (MFD / DDTree patch): target-verify / multi-mode draft graphs with a custom
++    mask replay through fast_prefill_plan, the mask packed at host-known offsets."""
++    from sglang.srt.speculative.ddtree_utils import ddtree_async_enabled
++
++    return ddtree_async_enabled()
++
++
+ def fast_prefill_plan(
+     self,
+     qo_indptr: torch.Tensor,
+@@ -839,7 +847,10 @@ class FlashInferAttnBackend(AttentionBackend):
+             and forward_mode.is_target_verify()
+             and spec_info is not None
+             and spec_info.spec_input_type == SpecInputType.DFLASH_VERIFY
+-            and getattr(spec_info, "custom_mask", None) is None
++            and (
++                getattr(spec_info, "custom_mask", None) is None
++                or _ddtree_packed_mask_fast_plan()
++            )
+             and self.prefill_backend == "fa2"
+             # Host-rebuilt layout only matches full attention (single wrapper);
+             # SWA/cross-attn keep the plain plan().
+@@ -2307,10 +2318,22 @@ class FlashInferIndicesUpdaterPrefill:
+             assert num_tokens_per_req is not None and num_tokens_per_req > 0, (
+                 f"fast_prefill_plan replay requires num_tokens_per_req > 0 (got {num_tokens_per_req})"
+             )
+-            assert use_custom_mask is None, (
+-                "fast_prefill_plan does not support custom_mask; keep the plain plan()"
+-            )
+             seq_lens_cpu_i32 = seq_lens_cpu.to(torch.int32)
++            if use_custom_mask is not None:
++                # DDTree (MFD / DDTree patch): pack the mask into the graph's mask buffers
++                # at host-known offsets; plan() would sync on segment_packbits.
++                from sglang.srt.speculative.ddtree_async import (
++                    fill_packed_custom_mask,
++                )
++
++                fill_packed_custom_mask(
++                    custom_mask_buf=wrapper_paged._custom_mask_buf,
++                    mask_indptr_buf=wrapper_paged._mask_indptr_buf,
++                    custom_mask=use_custom_mask,
++                    q_len=num_tokens_per_req,
++                    kv_lens_host=seq_lens_cpu_i32,
++                )
++                use_custom_mask = None
+             qo_indptr_host = torch.arange(
+                 0,
+                 (bs + 1) * num_tokens_per_req,
+diff --git a/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py b/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py
+index 321379c..0e7f50f 100644
+--- a/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py
++++ b/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py
+@@ -342,6 +342,13 @@ class DecodeCudaGraphRunner(BaseCudaGraphRunner):
+                 {bs for bs in self.capture_bs if bs <= max_requests} | {max_requests}
+             )
+             self.compile_bs = [bs for bs in self.compile_bs if bs <= max_requests]
++        if self.capture_forward_mode == ForwardMode.TARGET_VERIFY:
++            from sglang.srt.speculative.ddtree_utils import ddtree_profile_capture_bs
++
++            # DDTree batch-size switch (MFD / DDTree patch): each tree profile captures its own batch sizes.
++            self.capture_bs, self.compile_bs = ddtree_profile_capture_bs(
++                self.capture_bs, self.compile_bs
++            )
+         self.max_bs = max(self.capture_bs)
+         if KTRANSFORMERS_AVAILABLE:
+             KTMoEWrapper.set_capture_batch_sizes(self.capture_bs)
+@@ -1726,14 +1733,32 @@ class DecodeCudaGraphRunner(BaseCudaGraphRunner):
+             _, build_custom_mask = resolve_dflash_verify_mask_policy(
+                 self.model_runner.attn_backend
+             )
++            from sglang.srt.speculative.ddtree_utils import (
++                ddtree_enabled,
++                ddtree_mode_attention_impl,
++                ddtree_num_modes,
++            )
++
++            ddtree_mask = ddtree_enabled() and (
++                not self.model_runner.is_draft_worker
++                or (ddtree_num_modes() > 1 and ddtree_mode_attention_impl() == "flashinfer")
++            )
++            if ddtree_mask:
++                # DDTree: the target verifies a tree, and a multi-mode draft keeps
++                # its mode blocks apart; both graphs take a custom mask.
++                build_custom_mask = True
+             spec_info = DFlashVerifyInput(
+                 draft_token=None,
+                 positions=None,
+                 draft_token_num=self.captured_req_width,
+                 custom_mask=(
+-                    None
+-                    if (self.model_runner.is_draft_worker or not build_custom_mask)
+-                    else self.buffers.custom_mask
++                    self.buffers.custom_mask
++                    if ddtree_mask
++                    else (
++                        None
++                        if (self.model_runner.is_draft_worker or not build_custom_mask)
++                        else self.buffers.custom_mask
++                    )
+                 ),
+                 capture_hidden_mode=(
+                     CaptureHiddenMode.NULL
+diff --git a/python/sglang/srt/models/dflash.py b/python/sglang/srt/models/dflash.py
+index 62f823b..1912c37 100644
+--- a/python/sglang/srt/models/dflash.py
++++ b/python/sglang/srt/models/dflash.py
+@@ -39,6 +39,7 @@ from sglang.srt.model_loader.weight_utils import (
+ from sglang.srt.models.utils import apply_qk_norm
+ from sglang.srt.runtime_context import get_parallel, get_spec
+ from sglang.srt.speculative.dflash_utils import (
++    _get_dflash_config,
+     can_dflash_slice_qkv_weight,
+     get_dflash_attention_sliding_window_size,
+     get_dflash_layer_types,
+@@ -310,6 +311,7 @@ class DFlashAttention(nn.Module):
+             attn_type=self.attn_type,
+             quant_config=quant_config,
+         )
++        self.mode_attention = None
+ 
+     def _build_qkv_proj(self, bias: bool, quant_config, prefix: str) -> nn.Module:
+         return QKVParallelLinear(
+@@ -372,7 +374,11 @@ class DFlashAttention(nn.Module):
+             q, k = self.rotary_emb(positions, q, k)
+         if self.v_scale is not None:
+             v = v * self.v_scale
+-        if self.attention_sink_bias is None:
++        if self.mode_attention is not None:
++            # Multi-mode (MFD) draft step (MFD / DDTree patch): mask-free mode-block
++            # attention over the paged context (speculative/ddtree_mode_attention.py).
++            attn_output = self.mode_attention(q, k, v, forward_batch, self.attn.layer_id)
++        elif self.attention_sink_bias is None:
+             attn_output = self.attn(q, k, v, forward_batch)
+         else:
+             attn_output = self.attn(
+@@ -715,6 +721,27 @@ class DFlashDraftModel(nn.Module):
+             )
+         self.hidden_norm = RMSNorm(hidden_size, eps=rms_norm_eps)
+ 
++        # Multi-mode (MFD) drafts (MFD / DDTree patch): K learned mode embeddings
++        # added to the block inputs (mode_type "input" at layer 0); the K mode blocks
++        # are drafted together by DDTreeWorkerV2. mode_gate is loaded but unused
++        # (uniform mode prior).
++        dflash_cfg = _get_dflash_config(config)
++        self.num_modes = int(dflash_cfg.get("num_modes", 1) or 1)
++        self.mode_embed: Optional[nn.Parameter] = None
++        self.mode_gate: Optional[nn.Linear] = None
++        if self.num_modes > 1:
++            mode_type = dflash_cfg.get("mode_type", "input")
++            mode_layer = int(dflash_cfg.get("mode_layer", 0))
++            if mode_type != "input" or mode_layer != 0:
++                raise NotImplementedError(
++                    "Multi-mode DFLASH drafts support mode_type='input' at "
++                    f"mode_layer=0 only, got {mode_type!r} at {mode_layer}."
++                )
++            self.mode_embed = nn.Parameter(
++                torch.zeros(self.num_modes, hidden_size), requires_grad=False
++            )
++            self.mode_gate = nn.Linear(hidden_size, 1, bias=False)
++
+         # The model loader calls load_weights() before set_block_size(). Build
+         # Domino projector modules here so their parameters are present while
+         # checkpoint weights are loaded.
+diff --git a/python/sglang/srt/speculative/ddtree_async.py b/python/sglang/srt/speculative/ddtree_async.py
+new file mode 100644
+index 0000000..f806037
+--- /dev/null
++++ b/python/sglang/srt/speculative/ddtree_async.py
+@@ -0,0 +1,329 @@
++"""Sync-free pieces of a DDTree round (MFD / DDTree patch; see ddtree_utils).
++
++* ``enqueue_build_trees``: the host tree build of ddtree_utils, run as a CUDA host function
++  (cudaLaunchHostFunc) in stream order between the device-to-host copy of the draft's top-k
++  candidates and the host-to-device copy of the trees, so the scheduler thread never waits on
++  the GPU; the builder is the same C++ code (same trees, node for node). Host functions wake up
++  slowly (~0.4 ms per round measured), hence:
++* ``TreeBuildThread``: the same build on a dedicated C++ thread that waits for the candidates'
++  copy event and then writes a pinned flag; the stream waits for that flag
++  (``cuStreamWaitValue32``) before copying the trees in, so the GPU idles only for the build.
++* ``pack_mask_bits``: flashinfer's packed custom-mask layout (per request segment, row-major
++  [q_len x kv_len] bits, little bit order, segments at byte offsets) written from the bool mask
++  at host-known offsets, which is what ``segment_packbits`` produces without its host sync.
++"""
++
++from __future__ import annotations
++
++import torch
++import triton
++import triton.language as tl
++
++from sglang.srt.speculative import ddtree_utils
++
++_MODULE = None
++
++
++def _builder_source() -> str:
++    """The C++ builders of ddtree_utils (everything before its batch entry point)."""
++    src = ddtree_utils._CPP_SOURCE
++    start = src.index("namespace {")
++    end = src.index("// top_log_probs: [bs, K, L, k] float32")
++    return src[start:end]
++
++
++_ASYNC_SOURCE_TEMPLATE = r"""
++#include <torch/extension.h>
++#include <ATen/cuda/CUDAContext.h>
++#include <c10/cuda/CUDAException.h>
++#include <cuda_runtime_api.h>
++#include <atomic>
++#include <condition_variable>
++#include <cstring>
++#include <deque>
++#include <mutex>
++#include <queue>
++#include <thread>
++#include <unordered_map>
++#include <vector>
++
++__BUILDERS__
++
++namespace {
++
++struct BuildArgs {
++    const float* lp;
++    const int32_t* ids;
++    const float* prior;
++    int64_t bs, num_modes, depth_limit, topk, budget;
++    int64_t* tree;    // [bs, 3, budget + 1]
++    int64_t* counts;  // [bs]
++};
++
++void CUDART_CB build_trees_host_fn(void* user) {
++    BuildArgs* a = static_cast<BuildArgs*>(user);
++    const int64_t width = a->budget + 1;
++    const int64_t per_req = a->num_modes * a->depth_limit * a->topk;
++    for (int64_t b = 0; b < a->bs; ++b) {
++        int64_t* t = a->tree + b * 3 * width;
++        int64_t* d = t + width;
++        int64_t* p = d + width;
++        int64_t n;
++        if (a->num_modes == 1) {
++            n = build_single_one(a->lp + b * per_req, a->ids + b * per_req, a->depth_limit, a->topk, a->budget, t, d, p);
++        } else {
++            n = build_mixture_one(a->lp + b * per_req, a->ids + b * per_req, a->prior + b * a->num_modes, a->num_modes,
++                                  a->depth_limit, a->topk, a->budget, t, d, p);
++        }
++        t[0] = 0;
++        for (int64_t i = n + 1; i < width; ++i) { t[i] = 0; d[i] = 0; p[i] = -1; }
++        a->counts[b] = n;
++    }
++    delete a;
++}
++
++}  // namespace
++
++struct ThreadJob {
++    cudaEvent_t ready;  // recorded after the candidates' device-to-host copy
++    BuildArgs args;
++    volatile uint32_t* flag;  // pinned; the stream waits until *flag >= seq
++    uint32_t seq;
++};
++
++class BuildThread {
++  public:
++    explicit BuildThread(int device) : device_(device), worker_([this] { run(); }) {}
++    void submit(const ThreadJob& job) {
++        {
++            std::lock_guard<std::mutex> lock(mu_);
++            jobs_.push_back(job);
++        }
++        cv_.notify_one();
++    }
++
++  private:
++    void run() {
++        cudaSetDevice(device_);
++        while (true) {
++            ThreadJob job;
++            {
++                std::unique_lock<std::mutex> lock(mu_);
++                cv_.wait(lock, [this] { return !jobs_.empty(); });
++                job = jobs_.front();
++                jobs_.pop_front();
++            }
++            cudaEventSynchronize(job.ready);
++            BuildArgs* a = new BuildArgs(job.args);
++            build_trees_host_fn(a);  // frees a
++            std::atomic_thread_fence(std::memory_order_seq_cst);
++            *job.flag = job.seq;
++            std::atomic_thread_fence(std::memory_order_seq_cst);
++        }
++    }
++    int device_;
++    std::mutex mu_;
++    std::condition_variable cv_;
++    std::deque<ThreadJob> jobs_;
++    std::thread worker_;
++};
++
++BuildThread* g_thread = nullptr;
++
++// Hand a build to the builder thread (started on first use, never joined). All tensors are pinned
++// host tensors that outlive the round; `event` must stay alive until the build is done.
++void submit_build_trees(int64_t event, torch::Tensor top_log_probs, torch::Tensor top_ids, torch::Tensor log_prior,
++                        int64_t bs, int64_t budget, torch::Tensor tree, torch::Tensor counts, torch::Tensor flag,
++                        int64_t seq, int64_t device) {
++    TORCH_CHECK(top_log_probs.is_contiguous() && top_ids.is_contiguous() && log_prior.is_contiguous());
++    TORCH_CHECK(tree.is_contiguous() && tree.size(1) == 3 && tree.size(2) == budget + 1);
++    if (g_thread == nullptr) g_thread = new BuildThread(static_cast<int>(device));
++    ThreadJob job;
++    job.ready = reinterpret_cast<cudaEvent_t>(event);
++    job.args = BuildArgs{top_log_probs.data_ptr<float>(), top_ids.data_ptr<int32_t>(), log_prior.data_ptr<float>(),
++                         bs, top_log_probs.size(1), top_log_probs.size(2), top_log_probs.size(3), budget,
++                         tree.data_ptr<int64_t>(), counts.data_ptr<int64_t>()};
++    job.flag = reinterpret_cast<volatile uint32_t*>(flag.data_ptr<int32_t>());
++    job.seq = static_cast<uint32_t>(seq);
++    g_thread->submit(job);
++}
++
++// All tensors are pinned host tensors that outlive the stream work; the build runs on a driver
++// thread when the current stream reaches it (after the preceding device-to-host copies).
++void enqueue_build_trees(torch::Tensor top_log_probs, torch::Tensor top_ids, torch::Tensor log_prior, int64_t bs,
++                         int64_t budget, torch::Tensor tree, torch::Tensor counts) {
++    TORCH_CHECK(top_log_probs.is_contiguous() && top_ids.is_contiguous() && log_prior.is_contiguous());
++    TORCH_CHECK(tree.is_contiguous() && tree.size(1) == 3 && tree.size(2) == budget + 1);
++    auto* a = new BuildArgs{top_log_probs.data_ptr<float>(), top_ids.data_ptr<int32_t>(), log_prior.data_ptr<float>(),
++                            bs, top_log_probs.size(1), top_log_probs.size(2), top_log_probs.size(3), budget,
++                            tree.data_ptr<int64_t>(), counts.data_ptr<int64_t>()};
++    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
++    C10_CUDA_CHECK(cudaLaunchHostFunc(stream, build_trees_host_fn, a));
++}
++
++PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
++    m.def("enqueue_build_trees", &enqueue_build_trees);
++    m.def("submit_build_trees", &submit_build_trees);
++}
++"""
++
++
++def load_async_module():
++    global _MODULE
++    if _MODULE is None:
++        from torch.utils.cpp_extension import load_inline
++
++        source = _ASYNC_SOURCE_TEMPLATE.replace("__BUILDERS__", _builder_source())
++        _MODULE = load_inline(
++            name="sglang_ddtree_async_v2",
++            cpp_sources=[source],
++            with_cuda=True,
++            extra_cflags=["-O3"],
++            verbose=False,
++        )
++    return _MODULE
++
++
++def enqueue_build_trees(
++    *,
++    top_log_probs: torch.Tensor,
++    top_ids: torch.Tensor,
++    log_prior: torch.Tensor,
++    bs: int,
++    budget: int,
++    tree: torch.Tensor,
++    counts: torch.Tensor,
++) -> None:
++    """Stream-ordered host tree build into pinned ``tree[bs, 3, B + 1]`` (see ddtree_utils)."""
++    load_async_module().enqueue_build_trees(
++        top_log_probs, top_ids, log_prior, bs, budget, tree, counts
++    )
++
++
++class TreeBuildThread:
++    """Tree builds on the C++ builder thread, released to the stream through a pinned flag.
++
++    ``submit`` must be called after the candidates' device-to-host copies were enqueued on the
++    current stream; it records the copy event, hands the build to the thread, and makes the
++    stream wait (cuStreamWaitValue32, >= seq) for the thread's flag before any later work."""
++
++    def __init__(self, device: torch.device):
++        import ctypes
++
++        self.device = device
++        self.flag = torch.zeros(4, dtype=torch.int32, pin_memory=True)
++        self.seq = 0
++        self.events = [torch.cuda.Event() for _ in range(8)]
++        libcuda = ctypes.CDLL("libcuda.so.1")
++        fn = getattr(libcuda, "cuStreamWaitValue32_v2", None) or libcuda.cuStreamWaitValue32
++        fn.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint]
++        fn.restype = ctypes.c_int
++        self._wait_value = fn
++        self._ctypes = ctypes
++        load_async_module()
++
++    def submit(self, *, top_log_probs, top_ids, log_prior, bs, budget, tree, counts) -> None:
++        self.seq += 1
++        event = self.events[self.seq % len(self.events)]
++        event.record()
++        load_async_module().submit_build_trees(
++            event.cuda_event, top_log_probs, top_ids, log_prior, bs, budget, tree, counts,
++            self.flag, self.seq, self.device.index or 0,
++        )
++        stream = torch.cuda.current_stream()
++        status = self._wait_value(
++            self._ctypes.c_void_p(stream.cuda_stream),
++            self._ctypes.c_uint64(self.flag.data_ptr()),
++            self.seq,
++            0,  # CU_STREAM_WAIT_VALUE_GEQ
++        )
++        if status != 0:
++            raise RuntimeError(f"cuStreamWaitValue32 failed with CUresult {status}")
++
++
++@triton.jit
++def _pack_mask_kernel(
++    mask_ptr,
++    elem_off_ptr,
++    elem_len_ptr,
++    byte_off_ptr,
++    out_ptr,
++    BLOCK: tl.constexpr,
++):
++    b = tl.program_id(0)
++    chunk = tl.program_id(1)
++    elem_off = tl.load(elem_off_ptr + b)
++    elem_len = tl.load(elem_len_ptr + b)
++    byte_off = tl.load(byte_off_ptr + b)
++    num_bytes = (elem_len + 7) // 8
++    byte = chunk * BLOCK + tl.arange(0, BLOCK)
++    valid = byte < num_bytes
++    acc = tl.zeros([BLOCK], tl.int32)
++    for bit in tl.static_range(8):
++        e = byte.to(tl.int64) * 8 + bit
++        m = tl.load(mask_ptr + elem_off + e, mask=valid & (e < elem_len), other=0)
++        acc = acc | ((m != 0).to(tl.int32) << bit)
++    tl.store(out_ptr + byte_off + byte, acc.to(tl.uint8), mask=valid)
++
++
++def pack_mask_bits(
++    *,
++    mask: torch.Tensor,
++    elem_offsets: torch.Tensor,
++    elem_lens: torch.Tensor,
++    byte_offsets: torch.Tensor,
++    out: torch.Tensor,
++    max_bytes: int,
++) -> None:
++    """Pack each request's bool mask segment into ``out`` at its byte offset (little bit order).
++    The offsets/lengths are device int64 tensors [bs]; ``max_bytes`` bounds the longest segment."""
++    bs = int(elem_offsets.numel())
++    if bs == 0 or max_bytes <= 0:
++        return
++    BLOCK = 1024
++    _pack_mask_kernel[(bs, triton.cdiv(max_bytes, BLOCK))](
++        mask.view(torch.int8),
++        elem_offsets,
++        elem_lens,
++        byte_offsets,
++        out,
++        BLOCK=BLOCK,
++        num_warps=4,
++    )
++
++
++def fill_packed_custom_mask(
++    *,
++    custom_mask_buf: torch.Tensor,
++    mask_indptr_buf: torch.Tensor,
++    custom_mask: torch.Tensor,
++    q_len: int,
++    kv_lens_host: torch.Tensor,
++) -> None:
++    """Write flashinfer's packed custom mask and its byte indptr for a batch whose
++    every request has ``q_len`` queries and ``kv_lens_host[i]`` keys (host-known), from
++    the flat bool mask (row-major [q_len x kv_len] per request), without a host sync."""
++    bs = int(kv_lens_host.numel())
++    elem_lens = kv_lens_host.to(torch.int64) * int(q_len)
++    byte_lens = (elem_lens + 7) // 8
++    elem_offsets = torch.cumsum(elem_lens, 0) - elem_lens
++    byte_indptr = torch.zeros(bs + 1, dtype=torch.int64)
++    byte_indptr[1:] = torch.cumsum(byte_lens, 0)
++    host = torch.stack([elem_offsets, elem_lens, byte_indptr[:-1]]).pin_memory()
++    dev = host.to(custom_mask.device, non_blocking=True)
++    mask_indptr_buf[: bs + 1].copy_(
++        byte_indptr.to(mask_indptr_buf.dtype).pin_memory(), non_blocking=True
++    )
++    total = int(elem_lens.sum())
++    if custom_mask.numel() < total:
++        raise ValueError(
++            f"DDTree custom mask has {custom_mask.numel()} entries, the batch needs {total}."
++        )
++    pack_mask_bits(
++        mask=custom_mask,
++        elem_offsets=dev[0],
++        elem_lens=dev[1],
++        byte_offsets=dev[2],
++        out=custom_mask_buf,
++        max_bytes=int(byte_lens.max()),
++    )
+diff --git a/python/sglang/srt/speculative/ddtree_mode_attention.py b/python/sglang/srt/speculative/ddtree_mode_attention.py
+new file mode 100644
+index 0000000..14e51ee
+--- /dev/null
++++ b/python/sglang/srt/speculative/ddtree_mode_attention.py
+@@ -0,0 +1,428 @@
++"""Attention of a multi-mode (MFD) DFlash draft step without a mask (MFD / DDTree patch).
++
++The K mode blocks of a request sit side by side (K x block_size queries, mode-major); every query attends to the
++request's whole context (the draft KV cache, read through ``req_to_token``) and to the block_size keys of its own
++mode block (taken straight from this step's projected k/v, never written to the cache). Two Triton kernels: the
++split kernel, a port of the MFD release's inference/hf/mode_attention.py (flash-decoding over the context + one split
++for the in-block keys, then a log-sum-exp merge) for small batches, and a fused single-pass kernel for large ones
++(one program per KV head, request and mode group over the whole context plus the group's block keys, written out
++directly: no float32 partials, no merge); ``resolve_ctx_splits`` picks between them. Both are CUDA-graph safe: the
++grid has a fixed number of context splits (``num_ctx_splits``), every program derives its chunk from the context
++length read on the device, and empty splits store lse = -inf and contribute nothing to the merge.
++
++Implementations (SGLANG_DFLASH_DDTREE_MODE_ATTN): "triton" (this kernel), "flashinfer" (the paged prefill kernel
++with a block-diagonal custom mask; the worker builds the mask), "reference" (float32 masked attention, the
++ground truth of mode_attention.reference; eager validation only).
++"""
++
++from __future__ import annotations
++
++from typing import Optional
++
++import torch
++import triton
++import triton.language as tl
++
++LOG2E = 1.4426950408889634
++
++
++@triton.jit
++def _paged_mode_attn_split(
++    q_ptr,
++    knew_ptr,
++    vnew_ptr,
++    kc_ptr,
++    vc_ptr,
++    r2t_ptr,
++    rpi_ptr,
++    ctx_ptr,
++    o_ptr,
++    lse_ptr,
++    stride_qt,
++    stride_qh,
++    stride_kt,
++    stride_kh,
++    stride_vt,
++    stride_vh,
++    stride_kct,
++    stride_kch,
++    stride_vct,
++    stride_vch,
++    stride_r2t,
++    num_groups,
++    qk_scale,
++    G: tl.constexpr,
++    BS: tl.constexpr,
++    MPG: tl.constexpr,
++    K_MODES: tl.constexpr,
++    D: tl.constexpr,
++    BLOCK_N: tl.constexpr,
++    NUM_CTX_SPLITS: tl.constexpr,
++    MIN_CHUNK: tl.constexpr,
++):
++    kvh = tl.program_id(0)
++    bg = tl.program_id(1)
++    split = tl.program_id(2)
++    b = bg // num_groups
++    grp = bg % num_groups
++    ROWS: tl.constexpr = G * MPG * BS
++    rows = tl.arange(0, ROWS)
++    g = rows // (MPG * BS)  # query head within the KV head's group
++    m_local = (rows // BS) % MPG  # mode within this program's group
++    t = rows % BS  # token within the block
++    q_head = kvh * G + g
++    tok = (b * K_MODES + grp * MPG + m_local) * BS + t
++    d = tl.arange(0, D)
++    q = tl.load(q_ptr + tok[:, None] * stride_qt + q_head[:, None] * stride_qh + d[None, :])
++
++    m_i = tl.full([ROWS], float("-inf"), tl.float32)
++    l_i = tl.zeros([ROWS], tl.float32)
++    acc = tl.zeros([ROWS, D], tl.float32)
++    if split < NUM_CTX_SPLITS:
++        ctx = tl.load(ctx_ptr + b).to(tl.int32)
++        per_split = tl.cdiv(ctx, NUM_CTX_SPLITS)
++        # short contexts fill only the first splits; the rest exit after storing lse = -inf
++        chunk = tl.maximum(tl.maximum(tl.cdiv(per_split, BLOCK_N), 1) * BLOCK_N, MIN_CHUNK)
++        lo = split * chunk
++        hi = tl.minimum(lo + chunk, ctx)
++        row_ptr = r2t_ptr + tl.load(rpi_ptr + b).to(tl.int64) * stride_r2t
++        for start in range(lo, hi, BLOCK_N):
++            n = start + tl.arange(0, BLOCK_N)
++            valid = n < hi
++            slot = tl.load(row_ptr + n, mask=valid, other=0).to(tl.int64)
++            k = tl.load(
++                kc_ptr + slot[:, None] * stride_kct + kvh * stride_kch + d[None, :],
++                mask=valid[:, None],
++                other=0.0,
++            )
++            s = tl.dot(q, tl.trans(k)) * qk_scale
++            s = tl.where(valid[None, :], s, float("-inf"))
++            m_new = tl.maximum(m_i, tl.max(s, 1))
++            alpha = tl.exp2(m_i - m_new)
++            p = tl.exp2(s - m_new[:, None])
++            l_i = l_i * alpha + tl.sum(p, 1)
++            v = tl.load(
++                vc_ptr + slot[:, None] * stride_vct + kvh * stride_vch + d[None, :],
++                mask=valid[:, None],
++                other=0.0,
++            )
++            acc = acc * alpha[:, None] + tl.dot(p.to(v.dtype), v)
++            m_i = m_new
++    else:
++        # The block keys of this program's modes (MPG x BS tokens); a row sees its own mode's.
++        NB: tl.constexpr = MPG * BS
++        j = tl.arange(0, NB)
++        ktok = (b * K_MODES + grp * MPG) * BS + j
++        k = tl.load(knew_ptr + ktok[:, None] * stride_kt + kvh * stride_kh + d[None, :])
++        s = tl.dot(q, tl.trans(k)) * qk_scale
++        s = tl.where(m_local[:, None] == (j // BS)[None, :], s, float("-inf"))
++        m_i = tl.max(s, 1)
++        p = tl.exp2(s - m_i[:, None])
++        l_i = tl.sum(p, 1)
++        v = tl.load(vnew_ptr + ktok[:, None] * stride_vt + kvh * stride_vh + d[None, :])
++        acc = tl.dot(p.to(v.dtype), v)
++    has = l_i > 0
++    out = acc / tl.where(has, l_i, 1.0)[:, None]
++    lse = tl.where(has, m_i + tl.log2(tl.where(has, l_i, 1.0)), float("-inf"))
++    part = (split * tl.num_programs(0) + kvh) * tl.num_programs(1) + bg
++    # an empty split stores only lse = -inf; the merge does not read its output rows
++    tl.store(o_ptr + part * ROWS * D + rows[:, None] * D + d[None, :], out, mask=has[:, None])
++    tl.store(lse_ptr + part * ROWS + rows, lse)
++
++
++@triton.jit
++def _paged_mode_attn_merge(
++    o_part_ptr,
++    lse_ptr,
++    out_ptr,
++    stride_ot,
++    stride_oh,
++    num_kv_heads,
++    num_bg,
++    num_groups,
++    NUM_SPLITS: tl.constexpr,
++    G: tl.constexpr,
++    BS: tl.constexpr,
++    MPG: tl.constexpr,
++    K_MODES: tl.constexpr,
++    D: tl.constexpr,
++    RB: tl.constexpr,
++):
++    kvh = tl.program_id(0)
++    bg = tl.program_id(1)
++    b = bg // num_groups
++    grp = bg % num_groups
++    ROWS: tl.constexpr = G * MPG * BS
++    rows = tl.program_id(2) * RB + tl.arange(0, RB)
++    d = tl.arange(0, D)
++    m = tl.full([RB], float("-inf"), tl.float32)
++    total = tl.zeros([RB], tl.float32)
++    acc = tl.zeros([RB, D], tl.float32)
++    for split in range(NUM_SPLITS):
++        part = (split * num_kv_heads + kvh) * num_bg + bg
++        lse = tl.load(lse_ptr + part * ROWS + rows)
++        live = lse != float("-inf")
++        o = tl.load(o_part_ptr + part * ROWS * D + rows[:, None] * D + d[None, :], mask=live[:, None], other=0.0)
++        m_new = tl.maximum(m, lse)
++        alpha = tl.where(m_new == float("-inf"), 1.0, tl.exp2(m - m_new))
++        w = tl.where(lse == float("-inf"), 0.0, tl.exp2(lse - m_new))
++        total = total * alpha + w
++        acc = acc * alpha[:, None] + w[:, None] * o
++        m = m_new
++    res = acc / total[:, None]
++    g = rows // (MPG * BS)
++    tok = (b * K_MODES + grp * MPG + (rows // BS) % MPG) * BS + rows % BS
++    q_head = kvh * G + g
++    tl.store(
++        out_ptr + tok[:, None] * stride_ot + q_head[:, None] * stride_oh + d[None, :],
++        res.to(out_ptr.dtype.element_ty),
++    )
++
++
++@triton.jit
++def _paged_mode_attn_fused(
++    q_ptr,
++    knew_ptr,
++    vnew_ptr,
++    kc_ptr,
++    vc_ptr,
++    r2t_ptr,
++    rpi_ptr,
++    ctx_ptr,
++    out_ptr,
++    stride_qt,
++    stride_qh,
++    stride_kt,
++    stride_kh,
++    stride_vt,
++    stride_vh,
++    stride_kct,
++    stride_kch,
++    stride_vct,
++    stride_vch,
++    stride_r2t,
++    stride_ot,
++    stride_oh,
++    num_groups,
++    qk_scale,
++    G: tl.constexpr,
++    BS: tl.constexpr,
++    MPG: tl.constexpr,
++    K_MODES: tl.constexpr,
++    D: tl.constexpr,
++    BLOCK_N: tl.constexpr,
++):
++    # One program per (KV head, request, mode group): the whole context, then the group's block keys, written
++    # out directly; no partial buffers and no merge. For batches whose programs fill the GPU (the split kernel
++    # exists for small batches).
++    kvh = tl.program_id(0)
++    bg = tl.program_id(1)
++    b = bg // num_groups
++    grp = bg % num_groups
++    ROWS: tl.constexpr = G * MPG * BS
++    rows = tl.arange(0, ROWS)
++    g = rows // (MPG * BS)
++    m_local = (rows // BS) % MPG
++    t = rows % BS
++    q_head = kvh * G + g
++    tok = (b * K_MODES + grp * MPG + m_local) * BS + t
++    d = tl.arange(0, D)
++    q = tl.load(q_ptr + tok[:, None] * stride_qt + q_head[:, None] * stride_qh + d[None, :])
++
++    m_i = tl.full([ROWS], float("-inf"), tl.float32)
++    l_i = tl.zeros([ROWS], tl.float32)
++    acc = tl.zeros([ROWS, D], tl.float32)
++    ctx = tl.load(ctx_ptr + b).to(tl.int32)
++    row_ptr = r2t_ptr + tl.load(rpi_ptr + b).to(tl.int64) * stride_r2t
++    for start in range(0, ctx, BLOCK_N):
++        n = start + tl.arange(0, BLOCK_N)
++        valid = n < ctx
++        slot = tl.load(row_ptr + n, mask=valid, other=0).to(tl.int64)
++        k = tl.load(
++            kc_ptr + slot[:, None] * stride_kct + kvh * stride_kch + d[None, :],
++            mask=valid[:, None],
++            other=0.0,
++        )
++        s = tl.dot(q, tl.trans(k)) * qk_scale
++        s = tl.where(valid[None, :], s, float("-inf"))
++        m_new = tl.maximum(m_i, tl.max(s, 1))
++        alpha = tl.exp2(m_i - m_new)
++        p = tl.exp2(s - m_new[:, None])
++        l_i = l_i * alpha + tl.sum(p, 1)
++        v = tl.load(
++            vc_ptr + slot[:, None] * stride_vct + kvh * stride_vch + d[None, :],
++            mask=valid[:, None],
++            other=0.0,
++        )
++        acc = acc * alpha[:, None] + tl.dot(p.to(v.dtype), v)
++        m_i = m_new
++    NB: tl.constexpr = MPG * BS
++    j = tl.arange(0, NB)
++    ktok = (b * K_MODES + grp * MPG) * BS + j
++    k = tl.load(knew_ptr + ktok[:, None] * stride_kt + kvh * stride_kh + d[None, :])
++    s = tl.dot(q, tl.trans(k)) * qk_scale
++    s = tl.where(m_local[:, None] == (j // BS)[None, :], s, float("-inf"))
++    m_new = tl.maximum(m_i, tl.max(s, 1))
++    alpha = tl.exp2(m_i - m_new)
++    p = tl.exp2(s - m_new[:, None])
++    l_i = l_i * alpha + tl.sum(p, 1)
++    v = tl.load(vnew_ptr + ktok[:, None] * stride_vt + kvh * stride_vh + d[None, :])
++    acc = acc * alpha[:, None] + tl.dot(p.to(v.dtype), v)
++    out = acc / l_i[:, None]
++    tl.store(
++        out_ptr + tok[:, None] * stride_ot + q_head[:, None] * stride_oh + d[None, :],
++        out.to(out_ptr.dtype.element_ty),
++    )
++
++
++_SM_COUNT = {}
++
++
++def _sm_count(device) -> int:
++    idx = device.index if device.index is not None else torch.cuda.current_device()
++    if idx not in _SM_COUNT:
++        _SM_COUNT[idx] = torch.cuda.get_device_properties(idx).multi_processor_count
++    return _SM_COUNT[idx]
++
++
++def resolve_ctx_splits(num_ctx_splits: int, *, programs: int, device) -> int:
++    """num_ctx_splits > 0: that many splits (the merge path); 0: the fused single-pass kernel; < 0: auto, fused
++    once the (KV head, request, mode group) programs alone cover the SMs twice, else up to 4 splits."""
++    if num_ctx_splits >= 0:
++        return num_ctx_splits
++    want = 2 * _sm_count(device)
++    if programs >= want:
++        return 0
++    return min(4, max(1, -(-want // programs)))
++
++
++def paged_mode_block_attention(
++    *,
++    q: torch.Tensor,
++    k_new: torch.Tensor,
++    v_new: torch.Tensor,
++    k_cache: torch.Tensor,
++    v_cache: torch.Tensor,
++    req_to_token: torch.Tensor,
++    req_pool_indices: torch.Tensor,
++    ctx_lens: torch.Tensor,
++    num_modes: int,
++    block_size: int,
++    scaling: float,
++    num_ctx_splits: int,
++    out: Optional[torch.Tensor] = None,
++    modes_per_program: int = 2,
++    block_n: int = 64,
++    min_chunk: int = 64,
++    num_warps: Optional[int] = None,
++) -> torch.Tensor:
++    """q [T, H, D], k_new/v_new [T, Hkv, D] with T = bs * K * block_size (mode-major per request);
++    k_cache/v_cache [slots, Hkv, D]; the context of request b is req_to_token[req_pool_indices[b], :ctx_lens[b]].
++    Returns [T, H, D] (``out`` if given). num_ctx_splits: see resolve_ctx_splits."""
++    T, H, D = q.shape
++    Hkv = k_new.shape[1]
++    KL = num_modes * block_size
++    bs = T // KL
++    assert T == bs * KL and H % Hkv == 0
++    assert q.stride(-1) == 1 and k_new.stride(-1) == 1 and v_new.stride(-1) == 1
++    assert k_cache.stride(-1) == 1 and v_cache.stride(-1) == 1 and req_to_token.stride(1) == 1
++    mpg = modes_per_program if num_modes % modes_per_program == 0 else 1
++    groups = num_modes // mpg
++    G = H // Hkv
++    rows = G * mpg * block_size
++    if out is None:
++        out = torch.empty((T, H, D), device=q.device, dtype=q.dtype)
++    if bs == 0:
++        return out
++    warps = num_warps or (8 if rows >= 128 else 4)
++    num_ctx_splits = resolve_ctx_splits(num_ctx_splits, programs=Hkv * bs * groups, device=q.device)
++    if num_ctx_splits == 0:
++        _paged_mode_attn_fused[(Hkv, bs * groups)](
++            q, k_new, v_new, k_cache, v_cache, req_to_token, req_pool_indices, ctx_lens, out,
++            q.stride(0), q.stride(1), k_new.stride(0), k_new.stride(1), v_new.stride(0), v_new.stride(1),
++            k_cache.stride(0), k_cache.stride(1), v_cache.stride(0), v_cache.stride(1), req_to_token.stride(0),
++            out.stride(0), out.stride(1), groups, scaling * LOG2E,
++            G=G, BS=block_size, MPG=mpg, K_MODES=num_modes, D=D, BLOCK_N=block_n, num_warps=warps, num_stages=2,
++        )
++        return out
++    num_splits = num_ctx_splits + 1
++    o_part = torch.empty((num_splits, Hkv, bs * groups, rows, D), device=q.device, dtype=torch.float32)
++    lse = torch.empty((num_splits, Hkv, bs * groups, rows), device=q.device, dtype=torch.float32)
++    _paged_mode_attn_split[(Hkv, bs * groups, num_splits)](
++        q, k_new, v_new, k_cache, v_cache, req_to_token, req_pool_indices, ctx_lens, o_part, lse,
++        q.stride(0), q.stride(1), k_new.stride(0), k_new.stride(1), v_new.stride(0), v_new.stride(1),
++        k_cache.stride(0), k_cache.stride(1), v_cache.stride(0), v_cache.stride(1), req_to_token.stride(0),
++        groups, scaling * LOG2E,
++        G=G, BS=block_size, MPG=mpg, K_MODES=num_modes, D=D, BLOCK_N=block_n, NUM_CTX_SPLITS=num_ctx_splits,
++        MIN_CHUNK=min_chunk, num_warps=warps, num_stages=2,
++    )
++    rb = 32
++    _paged_mode_attn_merge[(Hkv, bs * groups, rows // rb)](
++        o_part, lse, out, out.stride(0), out.stride(1), Hkv, bs * groups, groups,
++        NUM_SPLITS=num_splits, G=G, BS=block_size, MPG=mpg, K_MODES=num_modes, D=D, RB=rb, num_warps=4,
++    )
++    return out
++
++
++def paged_mode_block_attention_reference(
++    *,
++    q, k_new, v_new, k_cache, v_cache, req_to_token, req_pool_indices, ctx_lens, num_modes, block_size, scaling,
++) -> torch.Tensor:
++    """Float32 masked attention (mode_attention.reference on the gathered context); returns [T, H, D] float32."""
++    T, H, D = q.shape
++    Hkv = k_new.shape[1]
++    KL = num_modes * block_size
++    out = torch.empty((T, H, D), device=q.device, dtype=torch.float32)
++    for b in range(T // KL):
++        ctx = int(ctx_lens[b])
++        slots = req_to_token[int(req_pool_indices[b]), :ctx].long()
++        rows = slice(b * KL, (b + 1) * KL)
++        kk = torch.cat([k_cache[slots], k_new[rows]], 0).float()  # [ctx + KL, Hkv, D]
++        vv = torch.cat([v_cache[slots], v_new[rows]], 0).float()
++        qb = q[rows].float().transpose(0, 1)  # [H, KL, D]
++        kk = kk.transpose(0, 1).repeat_interleave(H // Hkv, dim=0)
++        vv = vv.transpose(0, 1).repeat_interleave(H // Hkv, dim=0)
++        mode = torch.arange(KL, device=q.device) // block_size
++        mask = torch.zeros((KL, ctx + KL), device=q.device)
++        mask[:, ctx:].masked_fill_(mode[:, None] != mode[None, :], float("-inf"))
++        o = torch.nn.functional.scaled_dot_product_attention(qb, kk, vv, attn_mask=mask, scale=scaling)
++        out[rows] = o.transpose(0, 1)
++    return out
++
++
++class PagedModeAttention:
++    """Called by DFlashAttention (``mode_attention`` hook) in place of its RadixAttention for the multi-mode draft
++    forward: q/k/v as [T, heads * D] slices of the fused qkv; returns [T, heads * D]. The step's block keys are not
++    written to the cache (the round's target features overwrite those slots afterwards anyway)."""
++
++    def __init__(self, *, kv_pool, req_to_token, num_modes: int, block_size: int, num_heads: int, num_kv_heads: int,
++                 head_dim: int, scaling: float, num_ctx_splits: int, impl: str):
++        self.kv_pool = kv_pool
++        self.req_to_token = req_to_token
++        self.num_modes = int(num_modes)
++        self.block_size = int(block_size)
++        self.num_heads = int(num_heads)
++        self.num_kv_heads = int(num_kv_heads)
++        self.head_dim = int(head_dim)
++        self.scaling = float(scaling)
++        self.num_ctx_splits = int(num_ctx_splits)
++        assert impl in ("triton", "reference"), impl
++        self.impl = impl
++
++    def __call__(self, q, k, v, forward_batch, layer_id: int) -> torch.Tensor:
++        T = q.shape[0]
++        qh = q.view(T, self.num_heads, self.head_dim)
++        kh = k.view(T, self.num_kv_heads, self.head_dim)
++        vh = v.view(T, self.num_kv_heads, self.head_dim)
++        k_cache, v_cache = self.kv_pool.get_kv_buffer(layer_id)
++        bs = T // (self.num_modes * self.block_size)
++        args = dict(
++            q=qh, k_new=kh, v_new=vh, k_cache=k_cache, v_cache=v_cache, req_to_token=self.req_to_token,
++            req_pool_indices=forward_batch.req_pool_indices[:bs], ctx_lens=forward_batch.seq_lens[:bs],
++            num_modes=self.num_modes, block_size=self.block_size, scaling=self.scaling,
++        )
++        if self.impl == "reference":
++            out = paged_mode_block_attention_reference(**args).to(q.dtype)
++        else:
++            out = paged_mode_block_attention(**args, num_ctx_splits=self.num_ctx_splits)
++        return out.view(T, self.num_heads * self.head_dim)
+diff --git a/python/sglang/srt/speculative/ddtree_utils.py b/python/sglang/srt/speculative/ddtree_utils.py
+new file mode 100644
+index 0000000..4c999e1
+--- /dev/null
++++ b/python/sglang/srt/speculative/ddtree_utils.py
+@@ -0,0 +1,916 @@
++"""DDTree (tree-verified DFlash) helpers for DFlashWorkerV2.
++
++MFD / DDTree patch for SGLang v0.5.22. Behaviour follows the HF reference of the MFD release
++(inference/hf/ddtree.py, ``ddtree_generate`` with ``--tree-impl fast``):
++
++* The DFlash drafter outputs one distribution per future position (block of
++  ``block_size`` positions: the last verified token + ``block_size - 1`` masks).
++* The tree holds the ``B`` prefixes with the largest sum of per-position log-probs
++  (best-first heap, prefix-closed). Top-k candidates (k = min(B, V)) and their
++  log-probabilities come from the bf16 draft logits (top-k on bf16, log Z in fp32),
++  as ``tree_logits.top_candidates``; the heap is the C++ builder of
++  ``tree_build_ext.py`` (same pop order and tie-breaks), run on the host.
++* Multi-mode (MFD) drafts: score of a prefix = max over modes of (log prior + sum
++  of the mode's per-position log-probs); one merged heap over the K per-mode
++  searches; a prefix popped again from another mode reuses its node.
++* The target verifies the root + B nodes in one TARGET_VERIFY forward with an
++  ancestor-only tree attention mask; acceptance follows the target's own token at
++  each node (argmax at T=0, a sample at T>0), so the output is lossless.
++
++Enable with ``SGLANG_DFLASH_DDTREE_BUDGET=B`` (B > 0) together with
++``--speculative-algorithm DFLASH``; ``speculative_num_draft_tokens`` then becomes the
++verify width ``B + 1`` (set automatically) while the draft block keeps the draft
++config's block size.
++"""
++
++from __future__ import annotations
++
++import contextlib
++import logging
++from typing import Optional
++
++import msgspec
++import torch
++import triton
++import triton.language as tl
++
++from sglang.srt.environ import envs
++
++logger = logging.getLogger(__name__)
++
++
++# --------------------------------------------------------------------------- config
++
++
++class DDTreeProfile(msgspec.Struct, frozen=True):
++    """A tree configuration: budget B over ``num_modes`` drafted branches (``mode_subset``: their indices
++    in a multi-mode draft, MODE_SUBSET indexing; empty = all of the draft's modes), for decode batches
++    of at least ``min_bs`` requests (up to the next profile's)."""
++
++    budget: int
++    num_modes: int
++    mode_subset: tuple[int, ...] = ()
++    min_bs: int = 1
++
++    @property
++    def window_width(self) -> int:
++        """KV slots one request's round writes: the verify (B + 1) and the draft blocks (K * L)."""
++        return max(self.budget + 1, ddtree_block_size() * self.num_modes)
++
++
++# The profile whose decode graphs are being captured, while it is not the primary (env) one.
++_profile_override: Optional[DDTreeProfile] = None
++
++
++@contextlib.contextmanager
++def ddtree_profile_override(profile: DDTreeProfile):
++    """Make the config helpers below answer for ``profile`` (graph runners size and capture from them)."""
++    global _profile_override
++    previous, _profile_override = _profile_override, profile
++    try:
++        yield
++    finally:
++        _profile_override = previous
++
++
++def ddtree_profiles() -> list[DDTreeProfile]:
++    """The primary profile (BUDGET / NUM_MODES / MODE_SUBSET), then the batch-size switch's by ascending min_bs."""
++    primary = DDTreeProfile(
++        budget=int(envs.SGLANG_DFLASH_DDTREE_BUDGET.get()),
++        num_modes=int(envs.SGLANG_DFLASH_DDTREE_NUM_MODES.get()),
++        mode_subset=tuple(int(m) for m in envs.SGLANG_DFLASH_DDTREE_MODE_SUBSET.get()),
++    )
++    spec = (envs.SGLANG_DFLASH_DDTREE_SWITCH.get() or "").strip()
++    if primary.budget <= 0 or not spec:
++        return [primary]
++    profiles = [primary]
++    for entry in spec.split(","):
++        fields = entry.strip().split(":")
++        if len(fields) not in (2, 3):
++            raise ValueError(f"SGLANG_DFLASH_DDTREE_SWITCH entry {entry!r}: expected min_bs:budget[:branches].")
++        subset = tuple(int(m) for m in fields[2].split(".")) if len(fields) == 3 and fields[2] else ()
++        if not subset and primary.mode_subset:
++            raise ValueError(
++                f"SGLANG_DFLASH_DDTREE_SWITCH entry {entry!r} needs its branches when MODE_SUBSET is set "
++                "(no branches means all of the draft's modes)."
++            )
++        profiles.append(
++            DDTreeProfile(
++                budget=int(fields[1]),
++                num_modes=len(subset) or primary.num_modes,
++                mode_subset=subset,
++                min_bs=int(fields[0]),
++            )
++        )
++    min_bs = [p.min_bs for p in profiles]
++    if min_bs != sorted(set(min_bs)):
++        raise ValueError(f"SGLANG_DFLASH_DDTREE_SWITCH={spec!r}: min_bs must increase from 2.")
++    return profiles
++
++
++def ddtree_profile_capture_bs(
++    capture_bs: list[int], compile_bs: list[int]
++) -> tuple[list[int], list[int]]:
++    """Decode-graph batch sizes of the profile being captured: its own batch range, the range's top
++    included (so a batch never pads into the next profile's range)."""
++    profiles = ddtree_profiles()
++    if len(profiles) == 1:
++        return capture_bs, compile_bs
++    i = 0 if _profile_override is None else profiles.index(_profile_override)
++    lo = profiles[i].min_bs
++    hi = profiles[i + 1].min_bs - 1 if i + 1 < len(profiles) else max(capture_bs)
++    keep = {bs for bs in capture_bs if lo <= bs <= hi}
++    if hi <= max(capture_bs):
++        keep.add(hi)
++    if not keep:
++        raise ValueError(f"DDTree profile {profiles[i]} has no decode graph batch size in {capture_bs}.")
++    keep = sorted(keep)
++    return keep, [bs for bs in compile_bs if bs in keep]
++
++
++def ddtree_budget() -> int:
++    """Tree budget B (drafted nodes per round); 0 = DDTree off (plain DFLASH chain)."""
++    if _profile_override is not None:
++        return _profile_override.budget
++    return int(envs.SGLANG_DFLASH_DDTREE_BUDGET.get())
++
++
++def ddtree_enabled() -> bool:
++    return ddtree_budget() > 0
++
++
++def ddtree_block_size() -> int:
++    """Draft block size in DDTree mode (the draft runner's per-request width)."""
++    return int(envs.SGLANG_DFLASH_DDTREE_BLOCK_SIZE.get())
++
++
++def ddtree_verify_width() -> int:
++    return ddtree_budget() + 1
++
++
++def ddtree_num_modes() -> int:
++    """Draft modes per round (K mode blocks share one draft forward)."""
++    if _profile_override is not None:
++        return _profile_override.num_modes
++    return int(envs.SGLANG_DFLASH_DDTREE_NUM_MODES.get())
++
++
++def ddtree_mode_attention_impl() -> str:
++    """Attention of the multi-mode draft step: "triton" | "flashinfer" | "reference"."""
++    return str(envs.SGLANG_DFLASH_DDTREE_MODE_ATTN.get())
++
++
++def ddtree_mode_subset() -> tuple[int, ...]:
++    """Mode indices of a multi-mode draft to run (empty = all)."""
++    if _profile_override is not None:
++        return _profile_override.mode_subset
++    return tuple(int(m) for m in envs.SGLANG_DFLASH_DDTREE_MODE_SUBSET.get())
++
++
++def ddtree_draft_width() -> int:
++    """Draft tokens per request per round: one block per mode."""
++    return ddtree_block_size() * ddtree_num_modes()
++
++
++def ddtree_async_mode() -> int:
++    """0: synchronous host build; 1: CUDA host function; 2: builder thread + stream wait."""
++    return int(envs.SGLANG_DFLASH_DDTREE_ASYNC.get()) if ddtree_enabled() else 0
++
++
++def ddtree_async_enabled() -> bool:
++    return ddtree_async_mode() > 0
++
++
++def ddtree_window_width() -> int:
++    """KV slots one request's round may write, over all profiles (the scheduler reserves them per request)."""
++    return max(p.window_width for p in ddtree_profiles())
++
++
++def ddtree_draft_vocab_path() -> str:
++    """Token-id list of the reduced draft vocabulary ("" = the full vocabulary)."""
++    return str(envs.SGLANG_DFLASH_DDTREE_DRAFT_VOCAB.get() or "").strip()
++
++
++def load_draft_vocab(path: str, *, vocab_size: int) -> torch.Tensor:
++    """The draft vocabulary at ``path`` as sorted unique int64 token ids (CPU): a JSON list, a JSON object with
++    "token_ids", or whitespace-separated ids. Sorted by id, the subset keeps the full vocabulary's relative order."""
++    import json
++
++    with open(path) as f:
++        text = f.read()
++    try:
++        spec = json.loads(text)
++        ids = spec["token_ids"] if isinstance(spec, dict) else spec
++    except ValueError:
++        ids = text.split()
++    ids = sorted({int(i) for i in ids})
++    if not ids or ids[0] < 0 or ids[-1] >= vocab_size:
++        raise ValueError(
++            f"SGLANG_DFLASH_DDTREE_DRAFT_VOCAB={path!r}: token ids must lie in [0, {vocab_size}), "
++            f"got {len(ids)} ids in [{ids[0] if ids else None}, {ids[-1] if ids else None}]."
++        )
++    return torch.tensor(ids, dtype=torch.int64)
++
++
++# --------------------------------------------------------------------------- C++ tree builder
++
++_CPP_SOURCE = r"""
++#include <torch/extension.h>
++#include <cstring>
++#include <queue>
++#include <unordered_map>
++#include <vector>
++
++namespace {
++
++// Heap orders reproduce tree_build_ext.py (and hence ddtree.build_ddtree_tree /
++// build_mixture_tree) exactly.
++struct SingleEntry {
++    double key;               // -logw
++    std::vector<int> ranks;   // rank tuple, Python tie-break
++    int parent, depth, rank;
++    double logw;
++};
++struct SingleGreater {
++    bool operator()(const SingleEntry& a, const SingleEntry& b) const {
++        if (a.key != b.key) return a.key > b.key;
++        if (a.ranks != b.ranks) return a.ranks > b.ranks;
++        if (a.parent != b.parent) return a.parent > b.parent;
++        if (a.depth != b.depth) return a.depth > b.depth;
++        if (a.rank != b.rank) return a.rank > b.rank;
++        return a.logw > b.logw;
++    }
++};
++
++struct MixEntry {
++    float key;                // -(logw + prior[mode]) in float32
++    int mode, parent, depth, rank;
++    double logw;              // excludes the prior
++};
++struct MixGreater {
++    bool operator()(const MixEntry& a, const MixEntry& b) const {
++        if (a.key != b.key) return a.key > b.key;
++        if (a.mode != b.mode) return a.mode > b.mode;
++        if (a.parent != b.parent) return a.parent > b.parent;
++        if (a.depth != b.depth) return a.depth > b.depth;
++        if (a.rank != b.rank) return a.rank > b.rank;
++        return a.logw > b.logw;
++    }
++};
++
++// One tree. lp/ids: [L, k]. Writes tokens[1..n], depths[1..n], parents[0..n] (node 0 = root,
++// parents[0] = -1, depths[0] = 0); returns n.
++int64_t build_single_one(const float* lp, const int32_t* ids, int64_t depth_limit, int64_t topk, int64_t budget,
++                         int64_t* tokens, int64_t* depths, int64_t* parents) {
++    std::priority_queue<SingleEntry, std::vector<SingleEntry>, SingleGreater> heap;
++    const double first = static_cast<double>(lp[0]);
++    heap.push(SingleEntry{-first, {0}, 0, 1, 0, first});
++    parents[0] = -1;
++    depths[0] = 0;
++    int64_t count = 0;
++    while (!heap.empty() && count < budget) {
++        SingleEntry e = heap.top();
++        heap.pop();
++        const int64_t token = ids[(e.depth - 1) * topk + e.rank];
++        const int64_t current = count + 1;
++        tokens[current] = token;
++        depths[current] = e.depth;
++        parents[current] = e.parent;
++        ++count;
++        if (e.rank + 1 < topk) {
++            std::vector<int> r = e.ranks;
++            r.back() = e.rank + 1;
++            const double lw = e.logw - static_cast<double>(lp[(e.depth - 1) * topk + e.rank])
++                              + static_cast<double>(lp[(e.depth - 1) * topk + e.rank + 1]);
++            heap.push(SingleEntry{-lw, std::move(r), e.parent, e.depth, e.rank + 1, lw});
++        }
++        if (e.depth < depth_limit) {
++            std::vector<int> r = e.ranks;
++            r.push_back(0);
++            const double lw = e.logw + static_cast<double>(lp[e.depth * topk]);
++            heap.push(SingleEntry{-lw, std::move(r), static_cast<int>(current), e.depth + 1, 0, lw});
++        }
++    }
++    return count;
++}
++
++// One mixture tree. lp/ids: [K, L, k], prior: [K].
++int64_t build_mixture_one(const float* lp, const int32_t* ids, const float* prior, int64_t num_modes,
++                          int64_t depth_limit, int64_t topk, int64_t budget,
++                          int64_t* tokens, int64_t* depths, int64_t* parents) {
++    auto at = [&](int64_t mode, int64_t d, int64_t r) { return (mode * depth_limit + d) * topk + r; };
++    auto key = [&](double logw, int64_t mode) { return -(static_cast<float>(logw) + prior[mode]); };
++    std::priority_queue<MixEntry, std::vector<MixEntry>, MixGreater> heap;
++    for (int64_t mode = 0; mode < num_modes; ++mode) {
++        const double lw = static_cast<double>(lp[at(mode, 0, 0)]);
++        heap.push(MixEntry{key(lw, mode), static_cast<int>(mode), 0, 1, 0, lw});
++    }
++    std::vector<std::unordered_map<int64_t, int64_t>> child_maps(1);
++    child_maps.reserve(budget + 1);
++    parents[0] = -1;
++    depths[0] = 0;
++    int64_t count = 0;
++    while (!heap.empty() && count < budget) {
++        MixEntry e = heap.top();
++        heap.pop();
++        const int64_t token = ids[at(e.mode, e.depth - 1, e.rank)];
++        int64_t current;
++        auto found = child_maps[e.parent].find(token);
++        if (found == child_maps[e.parent].end()) {
++            current = count + 1;
++            tokens[current] = token;
++            depths[current] = e.depth;
++            parents[current] = e.parent;
++            child_maps.emplace_back();
++            child_maps[e.parent][token] = current;
++            ++count;
++        } else {
++            current = found->second;
++        }
++        if (e.rank + 1 < topk) {
++            const double lw = e.logw - static_cast<double>(lp[at(e.mode, e.depth - 1, e.rank)])
++                              + static_cast<double>(lp[at(e.mode, e.depth - 1, e.rank + 1)]);
++            heap.push(MixEntry{key(lw, e.mode), e.mode, e.parent, e.depth, e.rank + 1, lw});
++        }
++        if (e.depth < depth_limit) {
++            const double lw = e.logw + static_cast<double>(lp[at(e.mode, e.depth, 0)]);
++            heap.push(MixEntry{key(lw, e.mode), e.mode, static_cast<int>(current), e.depth + 1, 0, lw});
++        }
++    }
++    return count;
++}
++
++}  // namespace
++
++// top_log_probs: [bs, K, L, k] float32; top_ids: [bs, K, L, k] int32; log_prior: [bs, K] float32 (CPU, contiguous).
++// Outputs (CPU int64, contiguous): tree [bs, 3, B + 1] = tokens, depths, parents (index 0 = root), counts [bs].
++// Unused tail entries (index > count) are set to tokens 0 / depths 0 / parents -1.
++void build_trees(torch::Tensor top_log_probs, torch::Tensor top_ids, torch::Tensor log_prior, int64_t bs,
++                 int64_t budget, torch::Tensor tree, torch::Tensor counts) {
++    const int64_t num_modes = top_log_probs.size(1), depth_limit = top_log_probs.size(2), topk = top_log_probs.size(3);
++    const int64_t width = budget + 1;
++    TORCH_CHECK(tree.is_contiguous() && tree.size(1) == 3 && tree.size(2) == width);
++    TORCH_CHECK(top_log_probs.is_contiguous() && top_ids.is_contiguous() && log_prior.is_contiguous());
++    const float* lp = top_log_probs.data_ptr<float>();
++    const int32_t* ids = top_ids.data_ptr<int32_t>();
++    const float* prior = log_prior.data_ptr<float>();
++    int64_t* out = tree.data_ptr<int64_t>();
++    int64_t* cnt = counts.data_ptr<int64_t>();
++    const int64_t per_req = num_modes * depth_limit * topk;
++    for (int64_t b = 0; b < bs; ++b) {
++        int64_t* t = out + b * 3 * width;
++        int64_t* d = t + width;
++        int64_t* p = d + width;
++        int64_t n;
++        if (num_modes == 1) {
++            n = build_single_one(lp + b * per_req, ids + b * per_req, depth_limit, topk, budget, t, d, p);
++        } else {
++            n = build_mixture_one(lp + b * per_req, ids + b * per_req, prior + b * num_modes, num_modes,
++                                  depth_limit, topk, budget, t, d, p);
++        }
++        t[0] = 0;
++        for (int64_t i = n + 1; i < width; ++i) { t[i] = 0; d[i] = 0; p[i] = -1; }
++        cnt[b] = n;
++    }
++}
++
++PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
++    m.def("build_trees", &build_trees);
++}
++"""
++
++_MODULE = None
++
++
++def load_tree_module():
++    global _MODULE
++    if _MODULE is None:
++        from torch.utils.cpp_extension import load_inline
++
++        _MODULE = load_inline(
++            name="sglang_ddtree_build_v1",
++            cpp_sources=[_CPP_SOURCE],
++            extra_cflags=["-O3"],
++            verbose=False,
++        )
++    return _MODULE
++
++
++def build_trees_cpu(
++    *,
++    top_log_probs: torch.Tensor,
++    top_ids: torch.Tensor,
++    log_prior: torch.Tensor,
++    bs: int,
++    budget: int,
++    tree: torch.Tensor,
++    counts: torch.Tensor,
++) -> None:
++    """Host tree build for ``bs`` requests into ``tree[bs, 3, B + 1]`` (tokens,
++    depths, parents; see the C++ ``build_trees``)."""
++    load_tree_module().build_trees(
++        top_log_probs, top_ids, log_prior, bs, budget, tree, counts
++    )
++
++
++# --------------------------------------------------------------------------- draft top-k
++
++
++@triton.jit
++def _row_logsumexp_kernel(x_ptr, out_ptr, V, stride, BLOCK: tl.constexpr):
++    # One pass over a bf16 row with float32 accumulation (online max and sum), as
++    # tree_logits.row_logsumexp of the reference.
++    row = tl.program_id(0)
++    base = x_ptr + row.to(tl.int64) * stride
++    m = tl.full([BLOCK], float("-inf"), tl.float32)
++    s = tl.zeros([BLOCK], tl.float32)
++    for start in range(0, V, BLOCK):
++        offs = start + tl.arange(0, BLOCK)
++        x = tl.load(base + offs, mask=offs < V, other=float("-inf")).to(tl.float32)
++        m_new = tl.maximum(m, x)
++        s = tl.where(
++            m_new == float("-inf"), 0.0, s * tl.exp(m - m_new) + tl.exp(x - m_new)
++        )
++        m = m_new
++    row_max = tl.max(m, axis=0)
++    total = tl.sum(s * tl.exp(m - row_max), axis=0)
++    tl.store(out_ptr + row, row_max + tl.log(total))
++
++
++def row_logsumexp(x: torch.Tensor, out: Optional[torch.Tensor] = None) -> torch.Tensor:
++    """log-sum-exp over the last dim of a 2D row-major CUDA tensor, float32 [rows]."""
++    assert x.ndim == 2 and x.stride(1) == 1
++    rows = x.shape[0]
++    if out is None:
++        out = torch.empty(rows, device=x.device, dtype=torch.float32)
++    if rows > 0:
++        _row_logsumexp_kernel[(rows,)](
++            x, out, x.shape[1], x.stride(0), BLOCK=4096, num_warps=8
++        )
++    return out
++
++
++class DDTreeDraftTopK:
++    """Top-k candidates of every drafted position, folded into the draft cuda graph.
++
++    Called on the draft hidden states ``[bs * num_modes * block_size, H]`` (each
++    block: the anchor then the ``block_size - 1`` drafted positions). Writes
++    ``top_logp[bs, K, L, k]`` (float32 log-probabilities: bf16 top-k minus an fp32
++    log Z) and ``top_ids[bs, K, L, k]`` (int32 token ids) into static buffers.
++    ``k = min(budget, vocab)`` reaches every rank a best-first tree of ``budget``
++    nodes can use. TP=1 only (the full vocab is local).
++
++    Reduced draft vocabulary (``vocab_ids``, SGLANG_DFLASH_DDTREE_DRAFT_VOCAB): ``weight``
++    is then the LM head's rows of those ids ``[N, H]``; logits, top-k and log Z run over
++    the N subset tokens (the candidates' log-probs are renormalized over the subset) and
++    the top-k indices map back to full-vocabulary ids through ``vocab_ids`` (int32 [N]).
++    """
++
++    def __init__(
++        self,
++        *,
++        weight: torch.Tensor,
++        block_size: int,
++        num_modes: int,
++        budget: int,
++        max_bs: int,
++        vocab_ids: Optional[torch.Tensor] = None,
++    ):
++        self.weight = weight
++        self.block_size = int(block_size)
++        self.num_modes = int(num_modes)
++        self.vocab = int(weight.shape[0])
++        if vocab_ids is not None:
++            assert vocab_ids.dtype == torch.int32 and vocab_ids.shape == (self.vocab,), (
++                vocab_ids.dtype,
++                vocab_ids.shape,
++                weight.shape,
++            )
++        self.vocab_ids = vocab_ids
++        self.topk = int(min(budget, self.vocab))
++        self.max_bs = int(max_bs)
++        device = weight.device
++        rows = self.max_bs * self.num_modes * (self.block_size - 1)
++        self.top_logp = torch.empty((rows, self.topk), dtype=torch.float32, device=device)
++        self.top_ids = torch.empty((rows, self.topk), dtype=torch.int32, device=device)
++        self.log_z = torch.empty((rows,), dtype=torch.float32, device=device)
++
++    def __call__(self, hidden_states: torch.Tensor, input_ids=None) -> None:
++        del input_ids
++        L = self.block_size
++        groups = hidden_states.shape[0] // L  # bs * num_modes
++        hs = hidden_states.view(groups, L, -1)[:, 1:, :].reshape(-1, hidden_states.shape[-1])
++        if hs.dtype != self.weight.dtype:
++            hs = hs.to(self.weight.dtype)
++        n = hs.shape[0]
++        logits = torch.matmul(hs, self.weight.T)  # bf16 [n, V] (V = N subset tokens with a draft vocab)
++        top_vals, top_idx = torch.topk(logits, k=self.topk, dim=-1)
++        log_z = row_logsumexp(logits, out=self.log_z[:n])
++        torch.sub(top_vals.float(), log_z.unsqueeze(1), out=self.top_logp[:n])
++        if self.vocab_ids is None:
++            self.top_ids[:n].copy_(top_idx)
++        else:  # subset positions -> full-vocabulary token ids
++            torch.index_select(self.vocab_ids, 0, top_idx.view(-1), out=self.top_ids[:n].view(-1))
++
++    def outputs(self, bs: int):
++        rows = bs * self.num_modes * (self.block_size - 1)
++        shape = (bs, self.num_modes, self.block_size - 1, self.topk)
++        return self.top_logp[:rows].view(shape), self.top_ids[:rows].view(shape)
++
++
++# --------------------------------------------------------------------------- GPU kernels
++
++
++@triton.jit
++def _ddtree_prepare_kernel(
++    bonus_ptr,
++    prefix_ptr,
++    req_pool_ptr,
++    req_to_token_ptr,
++    block_ids_ptr,
++    block_pos_ptr,
++    window_ptr,
++    r2t_stride,
++    W,
++    mask_token_id,
++    L: tl.constexpr,
++    BLOCK_L: tl.constexpr,
++    BLOCK_W: tl.constexpr,
++):
++    """Draft block ids/positions ``[bs, L]`` and the verify window's cache locs ``[bs, W]``."""
++    b = tl.program_id(0)
++    prefix = tl.load(prefix_ptr + b).to(tl.int64)
++    bonus = tl.load(bonus_ptr + b).to(tl.int64)
++    offs_l = tl.arange(0, BLOCK_L)
++    ml = offs_l < L
++    ids = tl.where(offs_l == 0, bonus, mask_token_id)
++    tl.store(block_ids_ptr + b * L + offs_l, ids, mask=ml)
++    tl.store(block_pos_ptr + b * L + offs_l, prefix + offs_l, mask=ml)
++    rp = tl.load(req_pool_ptr + b).to(tl.int64)
++    row = req_to_token_ptr + rp * r2t_stride + prefix
++    for start in range(0, W, BLOCK_W):
++        offs = start + tl.arange(0, BLOCK_W)
++        mw = offs < W
++        loc = tl.load(row + offs, mask=mw, other=0)
++        tl.store(window_ptr + b * W + offs, loc.to(tl.int64), mask=mw)
++
++
++def ddtree_prepare(
++    *,
++    bonus_tokens: torch.Tensor,
++    prefix_lens: torch.Tensor,
++    req_pool_indices: torch.Tensor,
++    req_to_token: torch.Tensor,
++    block_ids_out: torch.Tensor,
++    positions_out: torch.Tensor,
++    window_out: torch.Tensor,
++    mask_token_id: int,
++) -> None:
++    bs = int(bonus_tokens.numel())
++    if bs == 0:
++        return
++    L = int(block_ids_out.shape[1])
++    W = int(window_out.shape[1])
++    assert req_to_token.stride(1) == 1
++    _ddtree_prepare_kernel[(bs,)](
++        bonus_tokens,
++        prefix_lens,
++        req_pool_indices,
++        req_to_token,
++        block_ids_out,
++        positions_out,
++        window_out,
++        req_to_token.stride(0),
++        W,
++        int(mask_token_id),
++        L=L,
++        BLOCK_L=triton.next_power_of_2(L),
++        BLOCK_W=min(1024, triton.next_power_of_2(W)),
++        num_warps=4,
++    )
++
++
++@triton.jit
++def _ddtree_verify_inputs_kernel(
++    root_ptr,
++    prefix_ptr,
++    tok_ptr,
++    depth_ptr,
++    parent_ptr,
++    mask_off_ptr,
++    ids_out_ptr,
++    pos_out_ptr,
++    mask_ptr,
++    W,
++    tree_stride,
++    MAX_DEPTH: tl.constexpr,
++    BLOCK_W: tl.constexpr,
++    BLOCK_P: tl.constexpr,
++):
++    """Program (b, i): row i of request b's flat tree mask ``[W, prefix + W]`` (the
++    prefix fully visible, then node i's ancestors including itself) and node i's
++    verify token / position."""
++    b = tl.program_id(0)
++    i = tl.program_id(1)
++    prefix = tl.load(prefix_ptr + b).to(tl.int64)
++    base = tl.load(mask_off_ptr + b).to(tl.int64)
++    row_len = prefix + W
++    row_ptr = mask_ptr + base + i.to(tl.int64) * row_len
++    ones = tl.full([BLOCK_P], 1, tl.int8)
++    for start in range(0, prefix, BLOCK_P):
++        offs = start + tl.arange(0, BLOCK_P)
++        tl.store(row_ptr + offs, ones, mask=offs < prefix)
++    cols = tl.arange(0, BLOCK_W)
++    vis = tl.zeros([BLOCK_W], tl.int8)
++    anc = i.to(tl.int64)
++    for _ in range(MAX_DEPTH + 1):
++        vis = tl.where((cols == anc) & (anc >= 0), 1, vis).to(tl.int8)
++        nxt = tl.load(parent_ptr + b * tree_stride + tl.maximum(anc, 0))
++        anc = tl.where(anc > 0, nxt, -1).to(tl.int64)
++    tl.store(row_ptr + prefix + cols, vis, mask=cols < W)
++    tok = tl.load(tok_ptr + b * tree_stride + i)
++    root = tl.load(root_ptr + b).to(tl.int64)
++    depth = tl.load(depth_ptr + b * tree_stride + i)
++    tl.store(ids_out_ptr + b * W + i, tl.where(i == 0, root, tok))
++    tl.store(pos_out_ptr + b * W + i, prefix + depth)
++
++
++def ddtree_verify_inputs(
++    *,
++    root_tokens: torch.Tensor,
++    prefix_lens: torch.Tensor,
++    tokens: torch.Tensor,
++    depths: torch.Tensor,
++    parents: torch.Tensor,
++    mask_offsets: torch.Tensor,
++    ids_out: torch.Tensor,
++    positions_out: torch.Tensor,
++    mask_out: torch.Tensor,
++    max_depth: int,
++) -> None:
++    bs, W = tokens.shape
++    if bs == 0:
++        return
++    assert tokens.stride() == depths.stride() == parents.stride() and tokens.stride(1) == 1
++    _ddtree_verify_inputs_kernel[(bs, W)](
++        root_tokens,
++        prefix_lens,
++        tokens,
++        depths,
++        parents,
++        mask_offsets,
++        ids_out,
++        positions_out,
++        mask_out.view(torch.int8),
++        W,
++        tokens.stride(0),
++        MAX_DEPTH=int(max_depth),
++        BLOCK_W=triton.next_power_of_2(W),
++        BLOCK_P=1024,
++        num_warps=4,
++    )
++
++
++@triton.jit
++def _ddtree_follow_kernel(
++    post_ptr,
++    tok_ptr,
++    parent_ptr,
++    window_ptr,
++    prefix_ptr,
++    accept_len_ptr,
++    commit_ptr,
++    bonus_ptr,
++    out_tokens_ptr,
++    new_seq_ptr,
++    mv_src_ptr,
++    mv_tgt_ptr,
++    hid_idx_ptr,
++    W,
++    parent_stride,
++    L: tl.constexpr,
++    BLOCK_W: tl.constexpr,
++    BLOCK_L: tl.constexpr,
++):
++    """Walk request b's tree along the target's token at each node (ddtree
++    follow_verified_tree) and emit the commit: the accepted path, its tokens + bonus,
++    the KV moves that compact the path to the front of the window, and the hidden
++    rows of the path."""
++    b = tl.program_id(0)
++    cols = tl.arange(0, BLOCK_W)
++    mw = cols < W
++    par = tl.load(parent_ptr + b * parent_stride + cols, mask=mw, other=-2)
++    tok = tl.load(tok_ptr + b * W + cols, mask=mw, other=-1)
++    lanes = tl.arange(0, BLOCK_L)
++    path = tl.zeros([BLOCK_L], tl.int64)
++    emitted = tl.zeros([BLOCK_L], tl.int64)
++    cur = tl.zeros([], tl.int64)
++    n = tl.zeros([], tl.int64)
++    alive = tl.full([], 1, tl.int64)
++    for _ in range(L - 1):
++        t = tl.load(post_ptr + b * W + cur)
++        match = (par == cur) & (tok == t) & mw
++        child = tl.max(tl.where(match, cols, -1), axis=0).to(tl.int64)
++        hit = (child >= 0) & (alive > 0)
++        emitted = tl.where(hit & (lanes == n), t, emitted)
++        n = tl.where(hit, n + 1, n)
++        path = tl.where(hit & (lanes == n), child, path)
++        cur = tl.where(hit, child, cur)
++        alive = tl.where(hit, alive, 0)
++    bonus = tl.load(post_ptr + b * W + cur)
++    emitted = tl.where(lanes == n, bonus, emitted)
++    prefix = tl.load(prefix_ptr + b).to(tl.int64)
++    ml = lanes < L
++    live = lanes <= n
++    tl.store(out_tokens_ptr + b * L + lanes, emitted, mask=ml)
++    tl.store(hid_idx_ptr + b * L + lanes, b * W + path, mask=ml)
++    src = tl.load(window_ptr + b * W + path, mask=ml & live, other=0)
++    tgt = tl.load(window_ptr + b * W + lanes, mask=ml & live, other=0)
++    tl.store(mv_src_ptr + b * L + lanes, src, mask=ml)
++    tl.store(mv_tgt_ptr + b * L + lanes, tgt, mask=ml)
++    tl.store(accept_len_ptr + b, n.to(tl.int32))
++    tl.store(commit_ptr + b, (n + 1).to(tl.int32))
++    tl.store(bonus_ptr + b, bonus.to(tl.int64))
++    tl.store(new_seq_ptr + b, prefix + n + 1)
++
++
++@triton.jit
++def _ddtree_compact_kv_kernel(
++    data_ptrs,
++    src_ptr,
++    tgt_ptr,
++    SLOT_WORDS: tl.constexpr,
++    TILE_WORDS: tl.constexpr,
++    L: tl.constexpr,
++    BLOCK_L: tl.constexpr,
++):
++    """Request b's commit moves in one KV buffer and one tile of the slot. Every source is loaded
++    before any store (a path slot can be another move's target); no-op moves (source == target, the
++    lanes past the path included) are masked out."""
++    b = tl.program_id(0)
++    buf = tl.program_id(1)
++    tile = tl.program_id(2)
++    lanes = tl.arange(0, BLOCK_L)
++    ml = lanes < L
++    src = tl.load(src_ptr + b * L + lanes, mask=ml, other=0)
++    tgt = tl.load(tgt_ptr + b * L + lanes, mask=ml, other=0)
++    move = ml & (src != tgt)
++    if tl.max(move.to(tl.int32), axis=0) == 0:
++        return
++    base = tl.cast(tl.load(data_ptrs + buf), tl.pointer_type(tl.int64))
++    words = tile * TILE_WORDS + tl.arange(0, TILE_WORDS)
++    mask = move[:, None] & (words[None, :] < SLOT_WORDS)
++    vals = tl.load(base + src[:, None] * SLOT_WORDS + words[None, :], mask=mask)
++    tl.store(base + tgt[:, None] * SLOT_WORDS + words[None, :], vals, mask=mask)
++
++
++class DDTreeKVCompactor:
++    """Commit-time KV moves of DDTree rounds on a plain token-major MHA pool: only the moves that
++    change a slot, one program per (request, buffer, tile). The pool's generic move copies every
++    entry of the [bs, L] move list (including the no-ops) through byte tiles."""
++
++    TILE_BYTES = 1024
++
++    def __init__(self, kv_pool):
++        strides = {int(s) for s in kv_pool.data_strides.tolist()}
++        if len(strides) != 1 or next(iter(strides)) % 8:
++            raise ValueError(f"DDTree KV compaction needs one slot stride (multiple of 8 bytes), got {strides}")
++        self.data_ptrs = kv_pool.data_ptrs
++        self.slot_words = next(iter(strides)) // 8
++        self.tile_words = min(self.slot_words, self.TILE_BYTES // 8)
++
++    @staticmethod
++    def supports(kv_pool) -> bool:
++        from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
++
++        return (
++            type(kv_pool) is MHATokenToKVPool
++            and not kv_pool.use_hnd
++            and not kv_pool.use_native_move_kv_cache
++            and kv_pool.native_k_scale_buffer is None
++            and kv_pool.k_scale_buffer is None
++            and kv_pool.layer_num > 0
++        )
++
++    def __call__(self, *, move_src: torch.Tensor, move_tgt: torch.Tensor) -> None:
++        bs, L = move_src.shape
++        if bs == 0:
++            return
++        grid = (bs, self.data_ptrs.numel(), triton.cdiv(self.slot_words, self.tile_words))
++        _ddtree_compact_kv_kernel[grid](
++            self.data_ptrs,
++            move_src,
++            move_tgt,
++            SLOT_WORDS=self.slot_words,
++            TILE_WORDS=self.tile_words,
++            L=L,
++            BLOCK_L=triton.next_power_of_2(L),
++            num_warps=4,
++        )
++
++
++def ddtree_follow(
++    *,
++    posterior: torch.Tensor,
++    verify_ids: torch.Tensor,
++    parents: torch.Tensor,
++    window: torch.Tensor,
++    prefix_lens: torch.Tensor,
++    accept_len_out: torch.Tensor,
++    commit_lens_out: torch.Tensor,
++    bonus_out: torch.Tensor,
++    out_tokens_out: torch.Tensor,
++    new_seq_lens_out: torch.Tensor,
++    move_src_out: torch.Tensor,
++    move_tgt_out: torch.Tensor,
++    hidden_index_out: torch.Tensor,
++) -> None:
++    bs, W = verify_ids.shape
++    if bs == 0:
++        return
++    L = int(out_tokens_out.shape[1])
++    assert parents.stride(1) == 1 and posterior.is_contiguous() and window.is_contiguous()
++    _ddtree_follow_kernel[(bs,)](
++        posterior,
++        verify_ids,
++        parents,
++        window,
++        prefix_lens,
++        accept_len_out,
++        commit_lens_out,
++        bonus_out,
++        out_tokens_out,
++        new_seq_lens_out,
++        move_src_out,
++        move_tgt_out,
++        hidden_index_out,
++        W,
++        parents.stride(0),
++        L=L,
++        BLOCK_W=triton.next_power_of_2(W),
++        BLOCK_L=triton.next_power_of_2(L),
++        num_warps=4,
++    )
++
++
++@triton.jit
++def _ddtree_mode_mask_kernel(
++    prefix_ptr,
++    mask_off_ptr,
++    mask_ptr,
++    KL,
++    L: tl.constexpr,
++    BLOCK_KL: tl.constexpr,
++    BLOCK_P: tl.constexpr,
++):
++    """Program (b, r): row r of request b's multi-mode draft mask ``[K * L, prefix + K * L]``:
++    the whole context, then the L keys of row r's own mode block (block-diagonal)."""
++    b = tl.program_id(0)
++    r = tl.program_id(1)
++    prefix = tl.load(prefix_ptr + b).to(tl.int64)
++    base = tl.load(mask_off_ptr + b).to(tl.int64)
++    row_ptr = mask_ptr + base + r.to(tl.int64) * (prefix + KL)
++    ones = tl.full([BLOCK_P], 1, tl.int8)
++    for start in range(0, prefix, BLOCK_P):
++        offs = start + tl.arange(0, BLOCK_P)
++        tl.store(row_ptr + offs, ones, mask=offs < prefix)
++    cols = tl.arange(0, BLOCK_KL)
++    vis = ((cols // L) == (r // L)).to(tl.int8)
++    tl.store(row_ptr + prefix + cols, vis, mask=cols < KL)
++
++
++def ddtree_mode_mask(
++    *,
++    prefix_lens: torch.Tensor,
++    mask_offsets: torch.Tensor,
++    mask_out: torch.Tensor,
++    num_modes: int,
++    block_size: int,
++) -> None:
++    bs = int(prefix_lens.numel())
++    KL = int(num_modes) * int(block_size)
++    if bs == 0:
++        return
++    _ddtree_mode_mask_kernel[(bs, KL)](
++        prefix_lens,
++        mask_offsets,
++        mask_out.view(torch.int8),
++        KL,
++        L=int(block_size),
++        BLOCK_KL=triton.next_power_of_2(KL),
++        BLOCK_P=1024,
++        num_warps=4,
++    )
++
++
++def ancestor_visibility_reference(parents: torch.Tensor) -> torch.Tensor:
++    """[W, W] bool ancestor-or-self matrix of one tree (tests only)."""
++    W = parents.numel()
++    vis = torch.zeros((W, W), dtype=torch.bool)
++    p = parents.tolist()
++    for i in range(W):
++        j = i
++        while j >= 0:
++            vis[i, j] = True
++            j = p[j] if j > 0 else -1
++    return vis
+diff --git a/python/sglang/srt/speculative/ddtree_worker_v2.py b/python/sglang/srt/speculative/ddtree_worker_v2.py
+new file mode 100644
+index 0000000..2cf0677
+--- /dev/null
++++ b/python/sglang/srt/speculative/ddtree_worker_v2.py
+@@ -0,0 +1,1135 @@
++"""DFLASH with DDTree tree verification (MFD / DDTree patch; see ddtree_utils).
++
++Prefill and idle steps are DFlashWorkerV2's. A decode round:
++  1. draft one block per request and mode (the bonus token + mask tokens; the K
++     mode blocks of a multi-mode draft share one forward and see the context plus
++     their own block); the draft cuda graph also takes the top-k candidates of
++     every drafted position;
++  2. build each request's best-first tree on the host (one sync per round);
++  3. verify root + B nodes in one TARGET_VERIFY forward with the tree mask;
++  4. follow the target's token at each node, compact the accepted path's KV to the
++     front of the verify window, and write the path's target features into the
++     draft KV cache.
++
++With SGLANG_DFLASH_DDTREE_SWITCH, each range of batch sizes runs its own tree
++configuration (budget, drafted branches) on decode graphs of its own.
++"""
++
++from __future__ import annotations
++
++import logging
++import time
++from typing import Optional
++
++import msgspec
++import torch
++
++from sglang.srt.environ import envs
++from sglang.srt.layers.sampler import (
++    sampling_from_probs_torch,
++    top_k_top_p_min_p_sampling_from_probs_torch,
++)
++from sglang.srt.lora.layers import unwrap_lora_layer
++from sglang.srt.managers.schedule_batch import ScheduleBatch
++from sglang.srt.managers.scheduler import GenerationBatchResult
++from sglang.srt.managers.tp_worker import TpModelWorker
++from sglang.srt.model_executor.forward_batch_info import (
++    CaptureHiddenMode,
++    ForwardBatch,
++    ForwardMode,
++    enable_num_token_non_padded,
++)
++from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule, get_spec
++from sglang.srt.server_args import ServerArgs
++from sglang.srt.speculative.ddtree_async import (
++    TreeBuildThread,
++    enqueue_build_trees,
++    load_async_module,
++)
++from sglang.srt.speculative.ddtree_mode_attention import PagedModeAttention
++from sglang.srt.speculative.ddtree_utils import (
++    DDTreeDraftTopK,
++    DDTreeKVCompactor,
++    DDTreeProfile,
++    build_trees_cpu,
++    ddtree_async_enabled,
++    ddtree_async_mode,
++    ddtree_block_size,
++    ddtree_draft_vocab_path,
++    ddtree_follow,
++    ddtree_mode_attention_impl,
++    ddtree_mode_mask,
++    ddtree_prepare,
++    ddtree_profile_override,
++    ddtree_profiles,
++    ddtree_verify_inputs,
++    load_draft_vocab,
++    load_tree_module,
++)
++from sglang.srt.speculative.dflash_info import DFlashVerifyInput
++from sglang.srt.speculative.dflash_info_v2 import DFlashDraftInputV2
++from sglang.srt.speculative.dflash_utils import (
++    apply_dflash_verify_logits_adjustments,
++    parse_dflash_draft_config,
++)
++from sglang.srt.speculative.dflash_worker_v2 import (
++    DFlashWorkerV2,
++    _resolve_dflash_embedding_module,
++)
++from sglang.srt.speculative.draft_worker_common import (
++    build_block_pos_offsets,
++    make_draft_block_spec_info,
++)
++from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
++from sglang.srt.speculative.spec_utils import draft_pp_context, draft_tp_context
++
++logger = logging.getLogger(__name__)
++
++
++class _StageTimer:
++    """Per-round stage times (SGLANG_DFLASH_DDTREE_TIMING=N logs every N rounds).
++
++    CUDA events mark the stage boundaries on the forward stream; finished rounds are
++    folded in without waiting (``Event.query``)."""
++
++    GPU_STAGES = ("between_rounds", "draft", "tree_gap", "verify", "commit")
++    # Optional split of the draft stage (marks draft_fwd / draft_layers): before the drafter forward, the
++    # drafter forward (with the top-k head when it is folded into the draft graph), the eager top-k head.
++    DRAFT_SPLIT = ("draft_pre", "draft_layers", "draft_head")
++    CPU_STAGES = (
++        "cpu_wait_draft",
++        "cpu_tree_build",
++        "cpu_verify_launch",
++        "cpu_round",
++        "cpu_to_draft",
++        "cpu_to_verify_start",
++        "cpu_to_verify_end",
++        "cpu_to_end",
++    )
++
++    def __init__(self, every: int):
++        self.every = every
++        self.rounds = 0
++        self.sums = {k: 0.0 for k in self.GPU_STAGES + self.CPU_STAGES}
++        self.by_bs = {}  # bs -> {"rounds": n, stage: ms sum} over the GPU stages and the draft split
++        self.pending = []
++        self.prev_end = None
++        self.current = None
++        self.round_start = None
++
++    def mark(self, name: str) -> None:
++        now = time.perf_counter()
++        if self.current is None:
++            self.current = {}
++            self.round_start = now
++        elif f"cpu_to_{name}" in self.sums:
++            self.sums[f"cpu_to_{name}"] += (now - self.last_mark) * 1e3
++        self.last_mark = now
++        event = torch.cuda.Event(enable_timing=True)
++        event.record()
++        self.current[name] = event
++
++    def set_bs(self, bs: int) -> None:
++        self.current["bs"] = bs
++
++    def cpu(self, name: str, seconds: float) -> None:
++        self.sums[name] += seconds * 1e3
++
++    def end_round(self) -> None:
++        self.mark("end")
++        self.cpu("cpu_round", time.perf_counter() - self.round_start)
++        self.pending.append(self.current)
++        self.current = None
++        while self.pending and self.pending[0]["end"].query():
++            self._fold(self.pending.pop(0))
++
++    def collect(self) -> None:
++        pass
++
++    def _fold(self, ev) -> None:
++        if self.prev_end is not None:
++            self.sums["between_rounds"] += self.prev_end.elapsed_time(ev["start"])
++        stages = {
++            "draft": ev["start"].elapsed_time(ev["draft"]),
++            "tree_gap": ev["draft"].elapsed_time(ev["verify_start"]),
++            "verify": ev["verify_start"].elapsed_time(ev["verify_end"]),
++            "commit": ev["verify_end"].elapsed_time(ev["end"]),
++        }
++        if "draft_fwd" in ev and "draft_layers" in ev:
++            stages["draft_pre"] = ev["start"].elapsed_time(ev["draft_fwd"])
++            stages["draft_layers"] = ev["draft_fwd"].elapsed_time(ev["draft_layers"])
++            stages["draft_head"] = ev["draft_layers"].elapsed_time(ev["draft"])
++        for k in ("draft", "tree_gap", "verify", "commit"):
++            self.sums[k] += stages[k]
++        per_bs = self.by_bs.setdefault(ev.get("bs", 0), {"rounds": 0})
++        per_bs["rounds"] += 1
++        for k, v in stages.items():
++            per_bs[k] = per_bs.get(k, 0.0) + v
++        self.prev_end = ev["end"]
++        self.rounds += 1
++        if self.rounds % self.every == 0:
++            avg = ", ".join(f"{k} {v / self.rounds:.3f}" for k, v in self.sums.items())
++            logger.warning("DDTree stage ms/round over %d rounds: %s", self.rounds, avg)
++            # The full batch: the largest batch size seen in at least 20 rounds.
++            full = [kv for kv in self.by_bs.items() if kv[1]["rounds"] >= 20] or list(self.by_bs.items())
++            bs, s = max(full, key=lambda kv: kv[0])
++            split = ", ".join(f"{k} {v / s['rounds']:.3f}" for k, v in s.items() if k != "rounds")
++            logger.warning("DDTree stage ms/round at bs=%d over %d rounds: %s", bs, s["rounds"], split)
++
++
++class _HostBuffers(msgspec.Struct, kw_only=True):
++    """Pinned host staging of one round (capacity ``cap`` requests)."""
++
++    cap: int
++    top_logp: torch.Tensor  # [cap, K, L - 1, k] float32
++    top_ids: torch.Tensor  # [cap, K, L - 1, k] int32
++    log_prior: torch.Tensor  # [cap, K] float32 (uniform prior: zeros)
++    prefix_lens: torch.Tensor  # [cap] int64
++    tree: torch.Tensor  # [cap, 3, W] int64: tokens, depths, parents (index 0 = root)
++    counts: torch.Tensor  # [cap] int64
++    mask_offsets: torch.Tensor  # [cap] int64, verify mask
++    ready: torch.cuda.Event
++
++
++class _Profile(msgspec.Struct, kw_only=True):
++    """A tree configuration and its round state; the switch's other profiles also own decode graphs."""
++
++    spec: DDTreeProfile
++    budget: int
++    num_modes: int
++    mode_subset: tuple
++    verify_width: int  # root + B nodes
++    draft_width: int  # one block per mode
++    window_width: int  # KV slots per request per round
++    max_bs: int
++    topk_head: DDTreeDraftTopK
++    draft_block_spec_info: DFlashVerifyInput
++    mode_attn_impl: Optional[str]
++    mode_attention: Optional[PagedModeAttention] = None
++    mode_embed: Optional[torch.Tensor] = None  # resolved on the first round (weights load after __init__)
++    host: Optional[_HostBuffers] = None
++    target_graph: Optional[object] = None  # decode graph runners; None: the model runners' own
++    draft_graph: Optional[object] = None
++
++
++def _has_decode_graphs(model_runner) -> bool:
++    runner = model_runner.decode_cuda_graph_runner
++    return runner is not None and runner is not model_runner.eager_runner
++
++
++def _capture_decode_graphs(model_runner, *, width: int):
++    """Another decode graph runner on ``model_runner`` for the profile being captured, on an attention
++    backend of its own (as the adaptive EAGLE worker's per-step target graphs)."""
++    tic = time.perf_counter()
++    free_before = torch.cuda.mem_get_info()[0]
++    backend = model_runner._get_attention_backend()
++    backend.prefill_attention_backend_str = model_runner.prefill_attention_backend_str
++    backend.decode_attention_backend_str = model_runner.decode_attention_backend_str
++    model_runner.kv_index_translator.bind_and_verify_backends([backend])
++    runner = model_runner._decode_cuda_graph_runner_cls()(
++        model_runner, attn_backend=backend, speculative_num_draft_tokens=width
++    )
++    logger.info(
++        "DDTree switch profile: %s decode graphs bs=%s width=%d, %.1f s, %.2f GB",
++        "draft" if model_runner.is_draft_worker else "target",
++        runner.capture_bs,
++        runner.captured_req_width,
++        time.perf_counter() - tic,
++        (free_before - torch.cuda.mem_get_info()[0]) / 2**30,
++    )
++    return runner
++
++
++class DDTreeWorkerV2(DFlashWorkerV2):
++    def __init__(
++        self,
++        server_args: ServerArgs,
++        gpu_id: int,
++        nccl_port: int,
++        target_worker: TpModelWorker,
++    ):
++        super().__init__(
++            server_args=server_args,
++            gpu_id=gpu_id,
++            nccl_port=nccl_port,
++            target_worker=target_worker,
++        )
++        specs = ddtree_profiles()
++        primary = specs[0]
++        verify_width = int(get_spec().speculative_num_draft_tokens)
++        if verify_width != primary.budget + 1:
++            raise ValueError(
++                "DDTree needs speculative_num_draft_tokens == budget + 1, got "
++                f"{verify_width} for budget {primary.budget}."
++            )
++        if int(get_parallel().tp_size) != 1 or get_parallel().attn_dp_enabled:
++            raise ValueError("DDTree supports tp_size == 1 without dp attention only.")
++        if self.selector is not None or self.lilicorr is not None or self._is_domino:
++            raise ValueError("DDTree supports plain DFlash block drafts only.")
++        if self.use_compact_draft_cache:
++            raise ValueError("DDTree does not support --speculative-draft-window-size.")
++        draft_config = parse_dflash_draft_config(
++            draft_hf_config=self.draft_model_runner.model_config.hf_config
++        )
++        block_size = int(draft_config.resolve_block_size(default=16))
++        if block_size != ddtree_block_size():
++            raise ValueError(
++                f"Draft block_size={block_size} but SGLANG_DFLASH_DDTREE_BLOCK_SIZE="
++                f"{ddtree_block_size()}; they must match."
++            )
++        # The chain worker sized its draft block from speculative_num_draft_tokens,
++        # which is the tree's verify width here.
++        self.block_size = block_size
++        self.draft_model.set_block_size(block_size)
++        self._block_pos_offsets = build_block_pos_offsets(
++            length=block_size, device=self.device
++        )
++        self._draft_block_ids_buf = None
++        # Index draft_modes is the default path (no mode vector) with SGLANG_DFLASH_DDTREE_DEFAULT_MODE.
++        self._num_branches = self.draft_model.num_modes + int(
++            bool(envs.SGLANG_DFLASH_DDTREE_DEFAULT_MODE.get())
++        )
++        self._lm_head_weight = unwrap_lora_layer(
++            self.target_worker.model_runner.model.lm_head
++        ).weight
++        # Reduced draft vocabulary: the draft head owns a copy of those LM-head rows ([N, H]), refreshed in place on
++        # the first decode round (the target's weights may finish loading after this worker is built).
++        self._draft_vocab = None  # int64 [N] subset ids on the device (None: the full vocabulary)
++        self._draft_vocab_ids = None  # the same ids as int32 (the head's top-k id map)
++        self._draft_head_weight = self._lm_head_weight
++        self._draft_head_synced = True
++        vocab_path = ddtree_draft_vocab_path()
++        if vocab_path:
++            self._draft_vocab = load_draft_vocab(
++                vocab_path, vocab_size=int(self._lm_head_weight.shape[0])
++            ).to(self._lm_head_weight.device)
++            self._draft_vocab_ids = self._draft_vocab.to(torch.int32)
++            self._draft_head_weight = self._lm_head_weight.index_select(0, self._draft_vocab).contiguous()
++            self._draft_head_synced = False
++        max_bs = self._max_bs()
++        if specs[-1].min_bs > max_bs:
++            logger.warning(
++                "DDTree switch: no batch reaches the profiles from %d requests on (max %d).",
++                min(p.min_bs for p in specs if p.min_bs > max_bs),
++                max_bs,
++            )
++            specs = [p for p in specs if p.min_bs <= max_bs]
++        # Mode attention objects are made in init_cuda_graphs: the draft KV pool does not exist yet.
++        self._profiles = [
++            self._make_profile(spec, max_bs=specs[i + 1].min_bs - 1 if i + 1 < len(specs) else max_bs)
++            for i, spec in enumerate(specs)
++        ]
++        # The profile whose draft graphs are being captured: the graphs fold in its top-k head.
++        self._capturing = self._profiles[0]
++        self._mode_attn_check = self._profiles[0].num_modes > 1 and bool(
++            envs.SGLANG_DFLASH_DDTREE_MODE_ATTN_CHECK.get()
++        )
++        self._mode_attn_check_stats = None
++        self._trace_path = envs.SGLANG_DFLASH_DDTREE_TRACE.get()
++        self._async = ddtree_async_enabled()
++        self._build_thread = (
++            TreeBuildThread(torch.device(self.device)) if ddtree_async_mode() == 2 else None
++        )
++        self._check_host_lens = bool(envs.SGLANG_DFLASH_DDTREE_CHECK_HOST_LENS.get())
++        # The commit's KV move: made on the first commit (the KV pool is attached after __init__).
++        self._kv_move = None
++        timing_every = int(envs.SGLANG_DFLASH_DDTREE_TIMING.get())
++        self._timer = _StageTimer(timing_every) if timing_every > 0 else None
++        load_tree_module()
++        if self._async:
++            load_async_module()
++        if get_parallel().tp_rank == 0:
++            for p in self._profiles:
++                logger.info(
++                    "DDTree enabled (batches %d-%d): budget=%d verify_width=%d draft block_size=%d "
++                    "num_modes=%d subset=%s window=%d topk=%d async=%s draft_vocab=%s",
++                    p.spec.min_bs,
++                    p.max_bs,
++                    p.budget,
++                    p.verify_width,
++                    block_size,
++                    p.num_modes,
++                    p.mode_subset or "all",
++                    p.window_width,
++                    p.topk_head.topk,
++                    self._async,
++                    "full" if self._draft_vocab is None else f"{p.topk_head.vocab} ({vocab_path})",
++                )
++
++    def _make_profile(self, spec: DDTreeProfile, *, max_bs: int) -> _Profile:
++        draft_modes = self.draft_model.num_modes
++        subset = spec.mode_subset
++        if spec.budget <= 0:
++            raise ValueError(f"DDTree profile {spec}: the budget must be positive.")
++        if not subset and spec.num_modes != draft_modes:
++            raise ValueError(
++                f"DDTree profile {spec}: NUM_MODES={spec.num_modes} but the draft has "
++                f"{draft_modes} mode(s); they must match."
++            )
++        if subset and (
++            draft_modes < 2
++            or len(subset) != spec.num_modes
++            or len(set(subset)) != len(subset)
++            or not all(0 <= m < self._num_branches for m in subset)
++        ):
++            raise ValueError(
++                f"DDTree profile {spec}: the mode subset must name NUM_MODES={spec.num_modes} "
++                f"distinct branches of the {draft_modes}-mode draft "
++                f"(index {draft_modes}: its default path, with SGLANG_DFLASH_DDTREE_DEFAULT_MODE=1)."
++            )
++        impl = ddtree_mode_attention_impl() if spec.num_modes > 1 else None
++        if impl not in (None, "triton", "flashinfer", "reference"):
++            raise ValueError(f"Unknown SGLANG_DFLASH_DDTREE_MODE_ATTN={impl!r}.")
++        verify_width, draft_width = spec.budget + 1, self.block_size * spec.num_modes
++        return _Profile(
++            spec=spec,
++            budget=spec.budget,
++            num_modes=spec.num_modes,
++            mode_subset=subset,
++            verify_width=verify_width,
++            draft_width=draft_width,
++            window_width=max(verify_width, draft_width),
++            max_bs=max_bs,
++            topk_head=DDTreeDraftTopK(
++                weight=self._draft_head_weight,
++                block_size=self.block_size,
++                num_modes=spec.num_modes,
++                budget=spec.budget,
++                max_bs=max_bs,
++                vocab_ids=self._draft_vocab_ids,
++            ),
++            draft_block_spec_info=make_draft_block_spec_info(
++                draft_token_num=draft_width, device=self.device
++            ),
++            mode_attn_impl=impl,
++        )
++
++    def init_cuda_graphs(self):
++        primary = self._profiles[0]
++        # The multi-mode draft attention hook must be in place before the draft graph is captured.
++        self._ensure_mode_attention()
++        self._set_mode_attention(primary.mode_attention)
++        super().init_cuda_graphs()
++        primary.target_graph = self.target_worker.model_runner.decode_cuda_graph_runner
++        primary.draft_graph = self.draft_model_runner.decode_cuda_graph_runner
++        for p in self._profiles[1:]:
++            self._capture_profile_graphs(p)
++        self._capturing = primary
++        self._set_mode_attention(primary.mode_attention)
++
++    def _capture_profile_graphs(self, p: _Profile) -> None:
++        """A switch profile's target-verify and draft decode graphs (its batch sizes only)."""
++        target_runner, draft_runner = self.target_worker.model_runner, self.draft_model_runner
++        if not (_has_decode_graphs(target_runner) and _has_decode_graphs(draft_runner)):
++            logger.warning("DDTree switch profile %s runs eager: no decode cuda graphs.", p.spec)
++            return
++        self._capturing = p
++        self._set_mode_attention(p.mode_attention)
++        with ddtree_profile_override(p.spec):
++            p.target_graph = _capture_decode_graphs(target_runner, width=p.verify_width)
++            with draft_pp_context(), draft_tp_context(self.draft_owns_attention):
++                p.draft_graph = _capture_decode_graphs(draft_runner, width=p.verify_width)
++
++    def _select_profile(self, bs: int) -> _Profile:
++        """The batch's profile; with several, its decode graphs become the model runners' for the round."""
++        if len(self._profiles) == 1:
++            return self._profiles[0]
++        p = next(p for p in reversed(self._profiles) if p.spec.min_bs <= bs)
++        if p.draft_graph is not None:
++            self.target_worker.model_runner.decode_cuda_graph_runner = p.target_graph
++            self.draft_model_runner.decode_cuda_graph_runner = p.draft_graph
++        return p
++
++    def _ensure_mode_attention(self) -> None:
++        for p in self._profiles:
++            if p.mode_attention is None and p.mode_attn_impl in ("triton", "reference"):
++                p.mode_attention = self._new_mode_attention(
++                    impl=p.mode_attn_impl, num_modes=p.num_modes
++                )
++
++    def _set_mode_attention(self, mode_attention) -> None:
++        for layer in self.draft_model.layers:
++            layer.self_attn.mode_attention = mode_attention
++
++    def _new_mode_attention(self, *, impl: str, num_modes: int):
++        runner = self.draft_model_runner
++        if runner.kv_index_translator.reads_are_translated or self.page_size != 1:
++            raise NotImplementedError(
++                "The mode-attention kernel reads req_to_token ids as cache rows; it needs an "
++                "untranslated draft pool with page_size 1 (use SGLANG_DFLASH_DDTREE_MODE_ATTN=flashinfer)."
++            )
++        attn0 = self.draft_model.layers[0].self_attn
++        mode_attention = PagedModeAttention(
++            kv_pool=runner.token_to_kv_pool,
++            req_to_token=runner.req_to_token_pool.req_to_token,
++            num_modes=num_modes,
++            block_size=self.block_size,
++            num_heads=attn0.num_heads,
++            num_kv_heads=attn0.num_kv_heads,
++            head_dim=attn0.head_dim,
++            scaling=attn0.scaling,
++            num_ctx_splits=int(envs.SGLANG_DFLASH_DDTREE_MODE_ATTN_SPLITS.get()),
++            impl=impl,
++        )
++        for layer in self.draft_model.layers:
++            attn = layer.self_attn
++            if attn.sliding_window_size not in (None, -1) or attn.attention_sink_bias is not None:
++                raise NotImplementedError("mode attention: full attention without sinks only")
++        return mode_attention
++
++    def _max_bs(self) -> int:
++        bs = max(get_exec().graph.cuda_graph_config.decode.bs or [1])
++        max_running = get_schedule().max_running_requests
++        if max_running is not None:
++            bs = max(bs, int(max_running))
++        return int(bs)
++
++    def _maybe_build_draft_sampler(self):
++        if envs.SGLANG_DFLASH_EAGER_DRAFT_SAMPLER.get():
++            if self._target_tp_rank == 0:
++                logger.info("DDTree draft top-k head kept eager (SGLANG_DFLASH_EAGER_DRAFT_SAMPLER=1).")
++            return None
++        if self._target_tp_rank == 0:
++            logger.info("DDTree draft top-k head folded into the draft cuda graph.")
++        return self._capture_topk
++
++    def _capture_topk(self, hidden_states, input_ids=None) -> None:
++        self._capturing.topk_head(hidden_states, input_ids)
++
++    def _host_buffers(self, p: _Profile, bs: int) -> _HostBuffers:
++        if p.host is not None and p.host.cap >= bs:
++            return p.host
++        cap = max(bs, p.max_bs)
++        K, D, k, W = p.num_modes, self.block_size - 1, p.topk_head.topk, p.verify_width
++
++        def pinned(shape, dtype):
++            return torch.zeros(shape, dtype=dtype, pin_memory=True)
++
++        p.host = _HostBuffers(
++            cap=cap,
++            top_logp=pinned((cap, K, D, k), torch.float32),
++            top_ids=pinned((cap, K, D, k), torch.int32),
++            log_prior=pinned((cap, K), torch.float32),
++            prefix_lens=pinned((cap,), torch.int64),
++            tree=pinned((cap, 3, W), torch.int64),
++            counts=pinned((cap,), torch.int64),
++            mask_offsets=pinned((cap,), torch.int64),
++            ready=torch.cuda.Event(),
++        )
++        return p.host
++
++    def forward_batch_generation(
++        self,
++        batch: ScheduleBatch,
++        on_publish=None,
++        grammar_barrier=None,
++        pp_proxy_tensors=None,
++    ) -> GenerationBatchResult:
++        if (
++            batch.forward_mode.is_extend()
++            or batch.is_extend_in_batch
++            or batch.forward_mode.is_idle()
++            or batch.spec_info is None
++        ):
++            return super().forward_batch_generation(
++                batch,
++                on_publish=on_publish,
++                grammar_barrier=grammar_barrier,
++                pp_proxy_tensors=pp_proxy_tensors,
++            )
++        if batch.has_grammar:
++            raise NotImplementedError("DDTree does not support grammar constraints.")
++        return self._forward_ddtree_decode(batch, on_publish=on_publish)
++
++    # ------------------------------------------------------------------ round
++
++    def _forward_ddtree_decode(self, batch: ScheduleBatch, *, on_publish):
++        draft_input = batch.spec_info
++        if not isinstance(draft_input, DFlashDraftInputV2):
++            raise RuntimeError("DDTree expected DFlashDraftInputV2 on the running batch.")
++        self._ensure_mode_attention()
++        if not self._draft_head_synced:
++            # In place (the draft graphs hold this tensor), once, stream-ordered before the first draft.
++            self._draft_head_weight.copy_(self._lm_head_weight.index_select(0, self._draft_vocab))
++            self._draft_head_synced = True
++        device = self.device
++        batch.seq_lens.record_stream(torch.get_device_module(device).current_stream())
++        bs = len(batch.seq_lens)
++        p = self._select_profile(bs)
++        L, W, WW = int(self.block_size), p.verify_width, p.window_width
++        prefix_lens = batch.seq_lens
++        timer = self._timer
++        if timer is not None:
++            timer.mark("start")
++            timer.set_bs(int(bs))
++
++        block_ids = torch.empty((bs, L), dtype=torch.long, device=device)
++        block_positions = torch.empty((bs, L), dtype=torch.int64, device=device)
++        window = torch.empty((bs, WW), dtype=torch.int64, device=device)
++        ddtree_prepare(
++            bonus_tokens=draft_input.bonus_tokens,
++            prefix_lens=prefix_lens,
++            req_pool_indices=batch.req_pool_indices,
++            req_to_token=self.model_runner.req_to_token_pool.req_to_token,
++            block_ids_out=block_ids,
++            positions_out=block_positions,
++            window_out=window,
++            mask_token_id=int(self._mask_token_id),
++        )
++        kv_loc_plan = self.target_worker.model_runner.kv_index_translator.plan(
++            req_pool_indices=batch.req_pool_indices,
++            seq_lens=prefix_lens,
++            seq_lens_cpu=(
++                batch.seq_lens_cpu
++                if batch.seq_lens_cpu is not None
++                else draft_input.nxt_kv_lens_cpu
++            ),
++            write_virtual=window.reshape(-1),
++            read_extent=WW,
++        )
++
++        draft_out = self._run_draft_blocks(
++            p=p,
++            batch=batch,
++            draft_input=draft_input,
++            block_ids=block_ids,
++            block_positions=block_positions,
++            kv_loc_plan=kv_loc_plan,
++        )
++        if timer is not None:
++            timer.mark("draft_layers")
++        if self._mode_attn_check and p is self._profiles[0]:
++            self._check_mode_attention(
++                p=p,
++                batch=batch,
++                draft_input=draft_input,
++                block_ids=block_ids,
++                block_positions=block_positions,
++                kv_loc_plan=kv_loc_plan,
++            )
++        if not (self._draft_sampler is not None and draft_out.can_run_graph):
++            hidden = draft_out.logits_output.hidden_states
++            p.topk_head(hidden[: bs * p.draft_width])
++        top_logp, top_ids = p.topk_head.outputs(bs)
++        if timer is not None:
++            timer.mark("draft")
++
++        if self._async and batch.seq_lens_cpu is not None:
++            # The committed lengths are host-known (the overlap scheduler resolves them
++            # from the published lengths), so the round needs no sync.
++            if self._check_host_lens:
++                assert batch.seq_lens_cpu.tolist() == prefix_lens.tolist(), (
++                    batch.seq_lens_cpu.tolist(),
++                    prefix_lens.tolist(),
++                )
++            tree, mask_offsets, prefix_lens_cpu = self._enqueue_trees(
++                p=p,
++                bs=bs,
++                top_logp=top_logp,
++                top_ids=top_ids,
++                prefix_lens_cpu=[int(p) for p in batch.seq_lens_cpu.tolist()],
++            )
++        else:
++            tree, mask_offsets, prefix_lens_cpu = self._build_trees(
++                p=p, bs=bs, top_logp=top_logp, top_ids=top_ids, prefix_lens=prefix_lens
++            )
++        tokens, depths, parents = tree[:, 0], tree[:, 1], tree[:, 2]
++
++        mask_numel = sum(W * (p + W) for p in prefix_lens_cpu)
++        custom_mask = torch.empty((mask_numel,), dtype=torch.bool, device=device)
++        verify_ids = torch.empty((bs, W), dtype=torch.long, device=device)
++        verify_positions = torch.empty((bs, W), dtype=torch.int64, device=device)
++        ddtree_verify_inputs(
++            root_tokens=draft_input.bonus_tokens,
++            prefix_lens=prefix_lens,
++            tokens=tokens,
++            depths=depths,
++            parents=parents,
++            mask_offsets=mask_offsets,
++            ids_out=verify_ids,
++            positions_out=verify_positions,
++            mask_out=custom_mask,
++            max_depth=L - 1,
++        )
++        if timer is not None:
++            timer.mark("verify_start")
++            verify_launch_start = time.perf_counter()
++
++        target_out = self._run_tree_verify(
++            p=p,
++            batch=batch,
++            draft_input=draft_input,
++            verify_ids=verify_ids,
++            verify_positions=verify_positions,
++            custom_mask=custom_mask,
++            window=window,
++            kv_loc_plan=kv_loc_plan,
++        )
++        if timer is not None:
++            timer.mark("verify_end")
++            timer.cpu("cpu_verify_launch", time.perf_counter() - verify_launch_start)
++        logits_output = target_out.logits_output
++        sampling_info = batch.sampling_info
++        if sampling_info is not None:
++            apply_dflash_verify_logits_adjustments(
++                next_token_logits=logits_output.next_token_logits,
++                sampling_info=sampling_info,
++                draft_token_num=W,
++            )
++        posterior = self._target_tokens(
++            logits=logits_output.next_token_logits,
++            sampling_info=sampling_info,
++            bs=bs,
++            width=W,
++            positions=verify_positions,
++        )
++
++        target_window = (
++            kv_loc_plan.write_ids(self.target_worker.model_runner.kv_index_translator)
++            .view(bs, WW)[:, :W]
++            .contiguous()
++        )
++        commit = self._follow_and_commit(
++            posterior=posterior,
++            verify_ids=verify_ids,
++            parents=parents,
++            target_window=target_window,
++            prefix_lens=prefix_lens,
++        )
++        if on_publish is not None:
++            on_publish(commit["new_seq_lens"])
++        if self._trace_path:
++            self._trace_round(
++                prefix_lens=prefix_lens,
++                verify_ids=verify_ids,
++                parents=parents,
++                posterior=posterior,
++                logits=logits_output.next_token_logits,
++                commit=commit,
++            )
++
++        hidden = logits_output.hidden_states
++        if hidden is None:
++            raise RuntimeError("DDTree verify requires target hidden states.")
++        path_hidden = hidden.index_select(0, commit["hidden_index"].reshape(-1))
++        draft_window = (
++            self._draft_write_ids(kv_loc_plan).view(bs, WW)[:, :L].contiguous()
++        )
++        self._append_target_hidden_to_draft_kv_by_loc(
++            target_hidden=path_hidden,
++            cache_loc=draft_window.reshape(-1),
++            cache_loc_2d=draft_window,
++            positions=block_positions.reshape(-1),
++            commit_lens=commit["commit_lens"],
++        )
++        logits_output.hidden_states = None
++        if timer is not None:
++            timer.end_round()
++
++        next_draft_input = self._make_next_draft_input_decode(
++            bonus_tokens=commit["bonus_tokens"], new_seq_lens=commit["new_seq_lens"]
++        )
++        return GenerationBatchResult(
++            logits_output=logits_output,
++            next_token_ids=commit["out_tokens"].reshape(-1),
++            accept_lens=commit["commit_lens"],
++            can_run_cuda_graph=target_out.can_run_cuda_graph,
++            next_draft_input=next_draft_input,
++            speculative_num_draft_tokens=W,
++            speculative_output_stride=L,
++            new_seq_lens=commit["new_seq_lens"],
++            routed_experts_output=target_out.routed_experts_output,
++            indexer_topk_output=target_out.indexer_topk_output,
++        )
++
++    # ------------------------------------------------------------------ steps
++
++    def _check_mode_attention(self, *, p, batch, draft_input, block_ids, block_positions, kv_loc_plan):
++        """Debug (eager): the multi-mode draft logits with each attention implementation vs the
++        float32 reference; logs mean |logit diff| and argmax agreement every 50 rounds."""
++        bs, L = block_ids.shape
++        weight = unwrap_lora_layer(self.target_worker.model_runner.model.lm_head).weight
++        logits = {}
++        for impl in ("reference", "triton", "flashinfer"):
++            out = self._run_draft_blocks(
++                p=p,
++                batch=batch,
++                draft_input=draft_input,
++                block_ids=block_ids,
++                block_positions=block_positions,
++                kv_loc_plan=kv_loc_plan,
++                impl=impl,
++            )
++            if out.can_run_graph:
++                raise RuntimeError("The mode-attention check needs --disable-cuda-graph.")
++            hidden = out.logits_output.hidden_states[: bs * p.draft_width]
++            hs = hidden.view(bs * p.num_modes, L, -1)[:, 1:].reshape(-1, hidden.shape[-1])
++            logits[impl] = torch.matmul(hs.to(weight.dtype), weight.T).float()
++        ref = logits["reference"]
++        ref_arg = ref.argmax(-1)
++        if self._mode_attn_check_stats is None:
++            self._mode_attn_check_stats = {"rounds": 0, "rows": 0}
++        st = self._mode_attn_check_stats
++        st["rounds"] += 1
++        st["rows"] += ref.shape[0]
++        for impl in ("triton", "flashinfer"):
++            diff = (logits[impl] - ref).abs()
++            st[f"{impl}_mean_abs"] = st.get(f"{impl}_mean_abs", 0.0) + float(diff.mean()) * ref.shape[0]
++            st[f"{impl}_max_abs"] = max(st.get(f"{impl}_max_abs", 0.0), float(diff.max()))
++            st[f"{impl}_argmax_same"] = st.get(f"{impl}_argmax_same", 0) + int(
++                (logits[impl].argmax(-1) == ref_arg).sum()
++            )
++        if st["rounds"] % 50 == 0:
++            rows = st["rows"]
++            logger.warning(
++                "DDTree mode-attention check over %d rounds (%d draft positions) vs float32 reference: "
++                "triton mean|dlogit| %.4f max %.3f argmax agree %.4f; flashinfer mean|dlogit| %.4f max %.3f "
++                "argmax agree %.4f",
++                st["rounds"], rows,
++                st["triton_mean_abs"] / rows, st["triton_max_abs"], st["triton_argmax_same"] / rows,
++                st["flashinfer_mean_abs"] / rows, st["flashinfer_max_abs"], st["flashinfer_argmax_same"] / rows,
++            )
++
++    def _run_draft_blocks(
++        self, *, p, batch, draft_input, block_ids, block_positions, kv_loc_plan, impl=None
++    ):
++        bs, L = block_ids.shape
++        K, KL = p.num_modes, p.draft_width
++        target_model = self.target_worker.model_runner.model
++        embed_module = unwrap_lora_layer(
++            _resolve_dflash_embedding_module(self.draft_model, target_model)
++        )
++        noise_embedding = embed_module(block_ids)
++        if self._noise_embed_scale != 1.0:
++            noise_embedding = noise_embedding * self._noise_embed_scale
++        positions = block_positions
++        spec_info = p.draft_block_spec_info
++        mode_embed = self._mode_embeddings(p)
++        if mode_embed is not None:
++            # Mode k's block: the shared block embedding + mode embedding k, at the
++            # same positions; the draft mask keeps the K blocks apart.
++            mode_embed = mode_embed.to(noise_embedding.dtype)
++            noise_embedding = noise_embedding.unsqueeze(1) + mode_embed[None, :, None, :]
++        mode_attention = None
++        if K > 1:
++            positions = block_positions.repeat(1, K)
++            mode_attention = p.mode_attention
++            if impl is not None:
++                mode_attention = self._mode_attention_for_check(p, impl)
++            if mode_attention is None:
++                # flashinfer: the paged prefill kernel with a block-diagonal custom mask
++                spec_info = self._mode_block_spec_info(
++                    p=p,
++                    bs=bs,
++                    prefix_lens=batch.seq_lens,
++                    prefix_lens_bound_cpu=(
++                        batch.seq_lens_cpu
++                        if batch.seq_lens_cpu is not None
++                        else draft_input.nxt_kv_lens_cpu
++                    ),
++                )
++        self._set_mode_attention(mode_attention)
++        input_embeds = noise_embedding.reshape(bs * KL, -1)
++
++        # Host bound of the draft's kv lengths: committed prefix + the draft blocks.
++        if batch.seq_lens_cpu is not None:
++            seq_lens_cpu = batch.seq_lens_cpu.to(torch.int32) + KL
++        elif draft_input.nxt_kv_lens_cpu is not None:
++            seq_lens_cpu = draft_input.nxt_kv_lens_cpu.clone()
++        else:
++            seq_lens_cpu = torch.tensor(
++                [req.kv.kv_allocated_len for req in batch.reqs], dtype=torch.int32
++            )
++        forward_batch = ForwardBatch(
++            forward_mode=ForwardMode.TARGET_VERIFY,
++            batch_size=bs,
++            input_ids=block_ids.repeat(1, K).reshape(-1),
++            req_pool_indices=batch.req_pool_indices,
++            seq_lens=batch.seq_lens,
++            out_cache_loc=None,
++            seq_lens_sum=int(seq_lens_cpu.sum()),
++            seq_lens_cpu=seq_lens_cpu,
++            positions=positions.reshape(-1),
++            input_embeds=input_embeds,
++            spec_algorithm=SpeculativeAlgorithm.DFLASH,
++            spec_info=spec_info,
++            capture_hidden_mode=CaptureHiddenMode.NULL,
++            num_token_non_padded=(
++                torch.tensor(bs * KL, dtype=torch.int32, device=self.device)
++                if enable_num_token_non_padded()
++                else None
++            ),
++            global_num_token_non_padded_cpu=bs * KL,
++        )
++        # The draft blocks write the first K * L columns of the round's window.
++        kv_loc_plan.bind(
++            forward_batch, self.draft_model_runner.kv_index_translator, cols=slice(0, KL)
++        )
++        if self._timer is not None:
++            self._timer.mark("draft_fwd")
++        with torch.inference_mode(), draft_tp_context(self.draft_owns_attention):
++            return self.draft_model_runner.forward(forward_batch)
++
++    def _mode_embeddings(self, p: _Profile):
++        """[num_modes, H] mode embeddings of the draft blocks; None for a single-mode draft or its default path."""
++        embed = self.draft_model.mode_embed
++        if embed is None or not p.mode_subset:
++            return embed
++        if p.mode_subset == (self.draft_model.num_modes,):
++            return None
++        if p.mode_embed is None:  # weights are loaded by the first decode round
++            # the default path, if named, is a zero mode vector
++            rows = torch.cat([embed, torch.zeros_like(embed[:1])])
++            p.mode_embed = rows[list(p.mode_subset)].clone()
++        return p.mode_embed
++
++    def _mode_attention_for_check(self, p: _Profile, impl: str):
++        if impl == "flashinfer":
++            return None
++        cache = self.__dict__.setdefault("_mode_attention_check_objs", {})
++        if (impl, p.num_modes) not in cache:
++            cache[(impl, p.num_modes)] = self._new_mode_attention(impl=impl, num_modes=p.num_modes)
++        return cache[(impl, p.num_modes)]
++
++    def _mode_block_spec_info(
++        self, *, p, bs, prefix_lens, prefix_lens_bound_cpu
++    ) -> DFlashVerifyInput:
++        """Draft spec info of a multi-mode round: block-diagonal mask among the K blocks."""
++        KL = p.draft_width
++        # Exact per-request offsets on the device; the buffer is sized from a host
++        # upper bound of the committed lengths, so no sync (flashinfer reads only the
++        # rows its mask indptr names).
++        sizes = KL * (prefix_lens.to(torch.int64) + KL)
++        offsets = torch.cumsum(sizes, dim=0) - sizes
++        if prefix_lens_bound_cpu is None:
++            prefix_lens_bound_cpu = prefix_lens.cpu()
++        numel = KL * (int(prefix_lens_bound_cpu.sum()) + bs * KL)
++        mask = torch.empty((numel,), dtype=torch.bool, device=self.device)
++        ddtree_mode_mask(
++            prefix_lens=prefix_lens,
++            mask_offsets=offsets,
++            mask_out=mask,
++            num_modes=p.num_modes,
++            block_size=self.block_size,
++        )
++        return DFlashVerifyInput(
++            draft_token=torch.empty((0,), dtype=torch.long, device=self.device),
++            positions=torch.empty((0,), dtype=torch.int64, device=self.device),
++            draft_token_num=KL,
++            custom_mask=mask,
++            capture_hidden_mode=CaptureHiddenMode.NULL,
++        )
++
++    def _build_trees(self, *, p, bs, top_logp, top_ids, prefix_lens):
++        W = p.verify_width
++        host = self._host_buffers(p, bs)
++        host.top_logp[:bs].copy_(top_logp, non_blocking=True)
++        host.top_ids[:bs].copy_(top_ids, non_blocking=True)
++        # The committed lengths ride along with the candidates (same sync).
++        host.prefix_lens[:bs].copy_(prefix_lens, non_blocking=True)
++        host.ready.record()
++        wait_start = time.perf_counter()
++        host.ready.synchronize()
++        build_start = time.perf_counter()
++        tree = host.tree[:bs]
++        build_trees_cpu(
++            top_log_probs=host.top_logp[:bs],
++            top_ids=host.top_ids[:bs],
++            log_prior=host.log_prior[:bs],
++            bs=bs,
++            budget=p.budget,
++            tree=tree,
++            counts=host.counts[:bs],
++        )
++        if self._timer is not None:
++            self._timer.cpu("cpu_wait_draft", build_start - wait_start)
++            self._timer.cpu("cpu_tree_build", time.perf_counter() - build_start)
++            self._timer.collect()
++        prefix_lens_cpu = [int(p) for p in host.prefix_lens[:bs].tolist()]
++        offset = 0
++        for b, p in enumerate(prefix_lens_cpu):
++            host.mask_offsets[b] = offset
++            offset += W * (p + W)
++        tree_gpu = tree.to(self.device, non_blocking=True)
++        offsets_gpu = host.mask_offsets[:bs].to(self.device, non_blocking=True)
++        return tree_gpu, offsets_gpu, prefix_lens_cpu
++
++    def _enqueue_trees(self, *, p, bs, top_logp, top_ids, prefix_lens_cpu):
++        """Stream-ordered tree build: D2H of the candidates, the host builder as a CUDA
++        host function, H2D of the trees; the scheduler thread does not wait."""
++        W = p.verify_width
++        host = self._host_buffers(p, bs)
++        host.top_logp[:bs].copy_(top_logp, non_blocking=True)
++        host.top_ids[:bs].copy_(top_ids, non_blocking=True)
++        build = (
++            self._build_thread.submit
++            if self._build_thread is not None
++            else enqueue_build_trees
++        )
++        build(
++            top_log_probs=host.top_logp[:bs],
++            top_ids=host.top_ids[:bs],
++            log_prior=host.log_prior[:bs],
++            bs=bs,
++            budget=p.budget,
++            tree=host.tree[:bs],
++            counts=host.counts[:bs],
++        )
++        tree_gpu = host.tree[:bs].to(self.device, non_blocking=True)
++        offsets, offset = [], 0
++        for p in prefix_lens_cpu:
++            offsets.append(offset)
++            offset += W * (p + W)
++        offsets_gpu = torch.tensor(offsets, dtype=torch.int64, pin_memory=True).to(
++            self.device, non_blocking=True
++        )
++        return tree_gpu, offsets_gpu, prefix_lens_cpu
++
++    def _run_tree_verify(
++        self,
++        *,
++        p,
++        batch,
++        draft_input,
++        verify_ids,
++        verify_positions,
++        custom_mask,
++        window,
++        kv_loc_plan,
++    ):
++        W, WW = p.verify_width, p.window_width
++        verify_input = DFlashVerifyInput(
++            draft_token=verify_ids.reshape(-1),
++            positions=verify_positions.reshape(-1),
++            draft_token_num=W,
++            custom_mask=custom_mask,
++            capture_hidden_mode=CaptureHiddenMode.FULL,
++            kv_loc_plan=kv_loc_plan,
++            kv_loc_cols=slice(0, W) if WW > W else None,
++        )
++        batch.out_cache_loc = window[:, :W].reshape(-1)
++        seq_lens_cpu_backup = batch.seq_lens_cpu
++        seq_lens_sum_backup = batch.seq_lens_sum
++        if seq_lens_cpu_backup is not None:
++            verify_host_seq_lens = seq_lens_cpu_backup + W
++            batch.seq_lens_cpu = verify_host_seq_lens
++            batch.seq_lens_sum = int(verify_host_seq_lens.sum())
++        elif draft_input.nxt_kv_lens_cpu is not None:
++            batch.seq_lens_cpu = draft_input.nxt_kv_lens_cpu
++            batch.seq_lens_sum = int(draft_input.nxt_kv_lens_sum)
++        verify_forward_batch, _ = verify_input.prepare_for_verify(
++            batch, self.target_worker
++        )
++        batch.seq_lens_cpu = seq_lens_cpu_backup
++        batch.seq_lens_sum = seq_lens_sum_backup
++        return self.target_worker.forward_batch_generation(
++            batch=None,
++            forward_batch=verify_forward_batch,
++            is_verify=True,
++            skip_attn_backend_init=True,
++        )
++
++    def _target_tokens(self, *, logits, sampling_info, bs, width, positions):
++        """The target's token at every tree node: argmax, or one independent
++        sample per node from its (temperature/top-k/top-p/min-p) distribution."""
++        W = width
++        if sampling_info is None or sampling_info.is_all_greedy:
++            return torch.argmax(logits, dim=-1).view(bs, W)
++        temperatures = sampling_info.temperatures.repeat_interleave(W, dim=0)
++        probs = torch.softmax(logits.float() / temperatures, dim=-1)
++        if not (
++            sampling_info.need_top_k_sampling
++            or sampling_info.need_top_p_sampling
++            or sampling_info.need_min_p_sampling
++        ):
++            # Pure temperature sampling: no filtering, so no [W, V] sort.
++            return sampling_from_probs_torch(probs).to(torch.int64).view(bs, W)
++        sampled = top_k_top_p_min_p_sampling_from_probs_torch(
++            probs,
++            sampling_info.top_ks.repeat_interleave(W),
++            sampling_info.top_ps.repeat_interleave(W),
++            sampling_info.min_ps.repeat_interleave(W),
++            sampling_info.need_min_p_sampling,
++            None,
++            positions.reshape(-1),
++        )
++        return sampled.to(torch.int64).view(bs, W)
++
++    def _trace_round(self, *, prefix_lens, verify_ids, parents, posterior, logits, commit):
++        """Debug dump of one round (SGLANG_DFLASH_DDTREE_TRACE); syncs."""
++        import json
++
++        bs, W = verify_ids.shape
++        logp = torch.log_softmax(logits.float(), dim=-1).view(bs, W, -1)
++        top_lp, top_ids = logp.topk(5, dim=-1)
++        rows = []
++        for b in range(bs):
++            n = int(commit["num_correct_drafts"][b])
++            path = (commit["hidden_index"][b, : n + 1] - b * W).tolist()
++            post = posterior[b].tolist()
++            rows.append(
++                {
++                    "prefix_len": int(prefix_lens[b]),
++                    "verify_ids": verify_ids[b].tolist(),
++                    "parents": parents[b].tolist(),
++                    "posterior": post,
++                    "path": path,
++                    "out_tokens": commit["out_tokens"][b, : n + 1].tolist(),
++                    "path_top_ids": top_ids[b, path].tolist(),
++                    "path_top_logp": top_lp[b, path].tolist(),
++                    "path_emitted_logp": [float(logp[b, j, post[j]]) for j in path],
++                }
++            )
++        with open(self._trace_path, "a") as f:
++            for row in rows:
++                f.write(json.dumps(row) + "\n")
++
++    def _follow_and_commit(
++        self, *, posterior, verify_ids, parents, target_window, prefix_lens
++    ):
++        bs, W = verify_ids.shape
++        L = int(self.block_size)
++        device = verify_ids.device
++        out = dict(
++            num_correct_drafts=torch.empty((bs,), dtype=torch.int32, device=device),
++            commit_lens=torch.empty((bs,), dtype=torch.int32, device=device),
++            bonus_tokens=torch.empty((bs,), dtype=torch.int64, device=device),
++            out_tokens=torch.empty((bs, L), dtype=torch.int64, device=device),
++            new_seq_lens=torch.empty((bs,), dtype=torch.int64, device=device),
++            move_src=torch.empty((bs, L), dtype=torch.int64, device=device),
++            move_tgt=torch.empty((bs, L), dtype=torch.int64, device=device),
++            hidden_index=torch.empty((bs, L), dtype=torch.int64, device=device),
++        )
++        ddtree_follow(
++            posterior=posterior,
++            verify_ids=verify_ids,
++            parents=parents,
++            window=target_window,
++            prefix_lens=prefix_lens,
++            accept_len_out=out["num_correct_drafts"],
++            commit_lens_out=out["commit_lens"],
++            bonus_out=out["bonus_tokens"],
++            out_tokens_out=out["out_tokens"],
++            new_seq_lens_out=out["new_seq_lens"],
++            move_src_out=out["move_src"],
++            move_tgt_out=out["move_tgt"],
++            hidden_index_out=out["hidden_index"],
++        )
++        # Move the accepted path's KV to the front of the window; both move kernels
++        # load every source before they store, and path index j >= j.
++        if self._kv_move is None:
++            self._kv_move = self._make_kv_move()
++        self._kv_move(move_src=out["move_src"], move_tgt=out["move_tgt"])
++        return out
++
++    def _make_kv_move(self):
++        kv_pool = self.model_runner.token_to_kv_pool_allocator.get_kvcache()
++        if DDTreeKVCompactor.supports(kv_pool) and not envs.SGLANG_DFLASH_DDTREE_GENERIC_KV_MOVE.get():
++            logger.info("DDTree commit: KV compaction kernel (moves that change a slot only).")
++            return DDTreeKVCompactor(kv_pool)
++        logger.info("DDTree commit: the KV pool's generic move.")
++
++        def generic(*, move_src, move_tgt):
++            kv_pool.move_kv_cache(move_tgt.reshape(-1), move_src.reshape(-1))
++
++        return generic
+diff --git a/python/sglang/srt/speculative/dflash_info_v2.py b/python/sglang/srt/speculative/dflash_info_v2.py
+index 0a22093..84a2097 100644
+--- a/python/sglang/srt/speculative/dflash_info_v2.py
++++ b/python/sglang/srt/speculative/dflash_info_v2.py
+@@ -140,6 +140,14 @@ class DFlashDraftInputV2(SpecInput):
+ 
+         # For DFLASH, each decode step needs a fixed-size verify block.
+         block_size = int(get_spec().speculative_num_draft_tokens)
++        from sglang.srt.speculative.ddtree_utils import (
++            ddtree_enabled,
++            ddtree_window_width,
++        )
++
++        if ddtree_enabled():
++            # DDTree: the round writes max(tree verify, K draft blocks) slots.
++            block_size = max(block_size, ddtree_window_width())
+         if block_size <= 0:
+             raise ValueError(
+                 f"DFLASH invalid speculative_num_draft_tokens={block_size}."
+diff --git a/python/sglang/srt/speculative/spec_info.py b/python/sglang/srt/speculative/spec_info.py
+index f72644a..10cdd4e 100644
+--- a/python/sglang/srt/speculative/spec_info.py
++++ b/python/sglang/srt/speculative/spec_info.py
+@@ -273,6 +273,14 @@ class SpeculativeAlgorithm(Enum):
+         cfg = resolving_view(server_args)
+         if cfg.speculative_num_draft_tokens is None:
+             return None
++        if self.is_dflash():
++            from sglang.srt.speculative.ddtree_utils import (
++                ddtree_enabled,
++                ddtree_window_width,
++            )
++
++            if ddtree_enabled():
++                return max(cfg.speculative_num_draft_tokens, ddtree_window_width())
+         if not cfg.speculative_adaptive:
+             return cfg.speculative_num_draft_tokens
+ 
+@@ -297,6 +305,16 @@ class SpeculativeAlgorithm(Enum):
+         # Here, we expose this interface to allow the other use cases.
+         if self.is_dspark() and is_draft_worker:
+             return num_draft_tokens - 1
++        if self.is_dflash() and is_draft_worker:
++            from sglang.srt.speculative.ddtree_utils import (
++                ddtree_draft_width,
++                ddtree_enabled,
++            )
++
++            if ddtree_enabled():
++                # DDTree: num_draft_tokens is the tree verify width; the draft
++                # forward is one block per mode.
++                return ddtree_draft_width()
+         return num_draft_tokens
+ 
+     def create_worker(
+@@ -309,6 +327,12 @@ class SpeculativeAlgorithm(Enum):
+         )
+ 
+         if self.is_dflash():
++            from sglang.srt.speculative.ddtree_utils import ddtree_enabled
++
++            if ddtree_enabled():
++                from sglang.srt.speculative.ddtree_worker_v2 import DDTreeWorkerV2
++
++                return DDTreeWorkerV2
+             # V2 worker drives both overlap and non-overlap (scheduler runs it
+             # synchronously when overlap is disabled), same as EAGLE.
+             from sglang.srt.speculative.dflash_worker_v2 import DFlashWorkerV2

@@ -1,0 +1,24 @@
+Multi-Future Drafting (MFD): inference code
+
+The code written for this repository is licensed under the Apache License, Version 2.0 (see LICENSE).
+It also contains or modifies the following third-party software. Each keeps its license.
+
+DDTree (inference/hf)
+  https://github.com/liranringel/ddtree, commit c96427a (2026)
+  Copyright (c) 2026 Liran Ringel. MIT License: inference/hf/LICENSE.
+  ddtree.py, dflash.py and model/ are DDTree files with our changes; the other files of inference/hf are new.
+  Liran Ringel and Yaniv Romano, "Accelerating Speculative Decoding with Block Diffusion Draft Trees",
+  arXiv:2604.12989.
+
+SGLang (inference/sglang/patches/sglang-v0.5.22-mfd.patch)
+  https://github.com/sgl-project/sglang, tag v0.5.22, commit baa9befa381511cd4d56f83980951e5a45fffc6d
+  Copyright 2023-2026 SGLang Team. Apache License 2.0: inference/sglang/patches/LICENSE-SGLANG.
+  The patch modifies SGLang source files (marked "MFD / DDTree patch") and adds new ones; install.sh downloads the
+  upstream sources and applies it.
+
+Python dependencies installed by the setup instructions (PyTorch, Transformers, SGLang, FlashInfer,
+flash-linear-attention, ...) are not part of this repository and come under their own licenses.
+
+Models referenced by the instructions (the Qwen3 / Qwen3.5 / Qwen3.6 targets, the z-lab DFlash drafters and the
+released MFD drafters) are downloaded by the user under their own terms. inference/sglang/vocab/ lists token ids
+ranked by their frequency in target-generated responses to the DFlash training prompts.
