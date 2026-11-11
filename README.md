@@ -102,16 +102,16 @@ open-perfectblend prompts, the data of Domino and DARTree.
 
 | Drafter | Target | Data, epochs | Paper | Hugging Face |
 |---|---|---|---|---|
-| MFD | Qwen3-4B | 1.42M, 3 | Table 1 (full data), Table 2 | [hhhhhhy5/MFD-Qwen3-4B](https://huggingface.co/hhhhhhy5/MFD-Qwen3-4B) |
-| MFD | Qwen3-8B | 1.42M, 3 | Table 1 (full data), Table 2 | [hhhhhhy5/MFD-Qwen3-8B](https://huggingface.co/hhhhhhy5/MFD-Qwen3-8B) |
-| MFD | Qwen3.5-4B (thinking) | 1.42M, 3 | Table 1 (full data) | [hhhhhhy5/MFD-Qwen3.5-4B](https://huggingface.co/hhhhhhy5/MFD-Qwen3.5-4B) |
-| MFD | Qwen3.6-27B (thinking) | 1.42M, 3 | Table 1 (full data) | [hhhhhhy5/MFD-Qwen3.6-27B](https://huggingface.co/hhhhhhy5/MFD-Qwen3.6-27B) |
-| MFD | Qwen3-4B | 100K, 3 | Table 1 | [hhhhhhy5/MFD-Qwen3-4B-100K](https://huggingface.co/hhhhhhy5/MFD-Qwen3-4B-100K) |
-| MFD | Qwen3-8B | 100K, 3 | Table 1 | [hhhhhhy5/MFD-Qwen3-8B-100K](https://huggingface.co/hhhhhhy5/MFD-Qwen3-8B-100K) |
-| MFD | Qwen3.5-4B (thinking) | 100K, 3 | Table 1 | [hhhhhhy5/MFD-Qwen3.5-4B-100K](https://huggingface.co/hhhhhhy5/MFD-Qwen3.5-4B-100K) |
-| MFD | Qwen3.6-27B (thinking) | 100K, 3 | Table 1 | [hhhhhhy5/MFD-Qwen3.6-27B-100K](https://huggingface.co/hhhhhhy5/MFD-Qwen3.6-27B-100K) |
-| MFD-D | Qwen3-4B | 1.42M, 3 | Table 2, Figure 5 | [hhhhhhy5/MFD-D-Qwen3-4B](https://huggingface.co/hhhhhhy5/MFD-D-Qwen3-4B) |
-| MFD-D | Qwen3-8B | 1.42M, 3 | Table 2, Figure 5 | [hhhhhhy5/MFD-D-Qwen3-8B](https://huggingface.co/hhhhhhy5/MFD-D-Qwen3-8B) |
+| MFD | Qwen3-4B | 1.42M, 3 | Table 1 (full data), Table 2 | <a href="https://huggingface.co/hhhhhhy5/MFD-Qwen3-4B"><img src="https://img.shields.io/badge/%F0%9F%A4%97-MFD--Qwen3--4B-ffd21e" alt="hhhhhhy5/MFD-Qwen3-4B on Hugging Face"></a> |
+| MFD | Qwen3-8B | 1.42M, 3 | Table 1 (full data), Table 2 | <a href="https://huggingface.co/hhhhhhy5/MFD-Qwen3-8B"><img src="https://img.shields.io/badge/%F0%9F%A4%97-MFD--Qwen3--8B-ffd21e" alt="hhhhhhy5/MFD-Qwen3-8B on Hugging Face"></a> |
+| MFD | Qwen3.5-4B (thinking) | 1.42M, 3 | Table 1 (full data) | <a href="https://huggingface.co/hhhhhhy5/MFD-Qwen3.5-4B"><img src="https://img.shields.io/badge/%F0%9F%A4%97-MFD--Qwen3.5--4B-ffd21e" alt="hhhhhhy5/MFD-Qwen3.5-4B on Hugging Face"></a> |
+| MFD | Qwen3.6-27B (thinking) | 1.42M, 3 | Table 1 (full data) | <a href="https://huggingface.co/hhhhhhy5/MFD-Qwen3.6-27B"><img src="https://img.shields.io/badge/%F0%9F%A4%97-MFD--Qwen3.6--27B-ffd21e" alt="hhhhhhy5/MFD-Qwen3.6-27B on Hugging Face"></a> |
+| MFD | Qwen3-4B | 100K, 3 | Table 1 | <a href="https://huggingface.co/hhhhhhy5/MFD-Qwen3-4B-100K"><img src="https://img.shields.io/badge/%F0%9F%A4%97-MFD--Qwen3--4B--100K-ffd21e" alt="hhhhhhy5/MFD-Qwen3-4B-100K on Hugging Face"></a> |
+| MFD | Qwen3-8B | 100K, 3 | Table 1 | <a href="https://huggingface.co/hhhhhhy5/MFD-Qwen3-8B-100K"><img src="https://img.shields.io/badge/%F0%9F%A4%97-MFD--Qwen3--8B--100K-ffd21e" alt="hhhhhhy5/MFD-Qwen3-8B-100K on Hugging Face"></a> |
+| MFD | Qwen3.5-4B (thinking) | 100K, 3 | Table 1 | <a href="https://huggingface.co/hhhhhhy5/MFD-Qwen3.5-4B-100K"><img src="https://img.shields.io/badge/%F0%9F%A4%97-MFD--Qwen3.5--4B--100K-ffd21e" alt="hhhhhhy5/MFD-Qwen3.5-4B-100K on Hugging Face"></a> |
+| MFD | Qwen3.6-27B (thinking) | 100K, 3 | Table 1 | <a href="https://huggingface.co/hhhhhhy5/MFD-Qwen3.6-27B-100K"><img src="https://img.shields.io/badge/%F0%9F%A4%97-MFD--Qwen3.6--27B--100K-ffd21e" alt="hhhhhhy5/MFD-Qwen3.6-27B-100K on Hugging Face"></a> |
+| MFD-D | Qwen3-4B | 1.42M, 3 | Table 2, Figure 5 | <a href="https://huggingface.co/hhhhhhy5/MFD-D-Qwen3-4B"><img src="https://img.shields.io/badge/%F0%9F%A4%97-MFD--D--Qwen3--4B-ffd21e" alt="hhhhhhy5/MFD-D-Qwen3-4B on Hugging Face"></a> |
+| MFD-D | Qwen3-8B | 1.42M, 3 | Table 2, Figure 5 | <a href="https://huggingface.co/hhhhhhy5/MFD-D-Qwen3-8B"><img src="https://img.shields.io/badge/%F0%9F%A4%97-MFD--D--Qwen3--8B-ffd21e" alt="hhhhhhy5/MFD-D-Qwen3-8B on Hugging Face"></a> |
 
 ## 🛠️ Install
 

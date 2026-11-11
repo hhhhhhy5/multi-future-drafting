@@ -6,8 +6,8 @@
   var LINKS = {
     arxiv: "https://arxiv.org/abs/2611.13017",
     code: "https://github.com/hhhhhhy5/multi-future-drafting",
-    models: "",                      // e.g. "https://huggingface.co/collections/ORG/..."
-    modelBase: ""                    // e.g. "https://huggingface.co/ORG/" + name
+    models: "https://huggingface.co/hhhhhhy5",
+    modelBase: "https://huggingface.co/hhhhhhy5/"  // + model name
   };
 
   // --- buttons -------------------------------------------------------------
