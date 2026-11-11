@@ -4,7 +4,7 @@
 
   // Fill these in once the release is public. Empty string = button shown as "soon".
   var LINKS = {
-    arxiv: "",                       // e.g. "https://arxiv.org/abs/2611.xxxxx"
+    arxiv: "https://arxiv.org/abs/2611.13017",
     code: "",                        // e.g. "https://github.com/ORG/multi-future-drafting"
     models: "",                      // e.g. "https://huggingface.co/collections/ORG/..."
     modelBase: ""                    // e.g. "https://huggingface.co/ORG/" + name
